@@ -19,14 +19,16 @@ from eventlake.collectors.kalshi import KalshiCollector
 from eventlake.collectors.polymarket import GAMMA_EVENTS, PolymarketCollector
 from eventlake.entities import Market, link_markets, upsert_markets
 from eventlake.health import POLICIES, FeedStatus, check_feed
-from eventlake.panel import PanelRow, eve_panel, event_panel
+from eventlake.panel import PanelRow, eve_panel
 from eventlake.runner import Collector, run_collector
 from eventlake.store import Store
 from eventlake.types import Observation, parse_utc, utc
 
 IMPLIED_HEADER = "implied move (synthetic sample)"
 _OPTIONS_FEED = "tradier.options"
-_UNKNOWN = "—"
+_UNKNOWN = "-"
+_AFTER = timedelta(days=2)
+_TITLE_WIDTH = 48
 _KINDS: tuple[EventKind, ...] = ("FOMC", "CPI")
 _LIVE_DAYS = 120
 _MIN_PER_KIND = 4
@@ -196,19 +198,24 @@ def _stamp(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%MZ")
 
 
-def _short(market_id: str | None, width: int = 50) -> str:
-    if market_id is None:
+def _market_label(row: PanelRow) -> str:
+    """``venue: title`` with the title cut to ``_TITLE_WIDTH`` characters."""
+    if row.market_id is None:
         return _UNKNOWN
-    return market_id if len(market_id) <= width else market_id[: width - 1] + "…"
+    venue = row.market_id.split(":", 1)[0]
+    title = " ".join((row.market_title or row.market_id).split())
+    if len(title) > _TITLE_WIDTH:
+        title = title[: _TITLE_WIDTH - 3] + "..."
+    return f"{venue}: {title}"
 
 
 def _panel_cells(rows: Sequence[PanelRow]) -> tuple[list[str], list[list[str]]]:
-    headers = ["event", "as of (UTC)", "top market", "P(yes)", IMPLIED_HEADER, "realised move"]
+    headers = ["event", "as of (UTC)", "top market", "market prob", IMPLIED_HEADER, "realised move"]
     body = [
         [
             r.event_id,
             _stamp(r.as_of),
-            _short(r.market_id),
+            _market_label(r),
             pct(r.market_prob, 1),
             pct(r.implied_move, 2),
             pct(r.realized_move, 2),
@@ -218,20 +225,26 @@ def _panel_cells(rows: Sequence[PanelRow]) -> tuple[list[str], list[list[str]]]:
     return headers, body
 
 
-def _changes(eve: Sequence[PanelRow], now: Sequence[PanelRow]) -> tuple[int, int]:
-    """Cells (market prob, implied move, realised move) that went empty->filled, filled->empty."""
-    filled = emptied = 0
-    now_by_id = {r.event_id: r for r in now}
-    for before in eve:
-        after = now_by_id[before.event_id]
-        for a, b in (
-            (before.market_prob, after.market_prob),
-            (before.implied_move, after.implied_move),
-            (before.realized_move, after.realized_move),
-        ):
+_CELLS = (
+    ("market prob", "market_prob"),
+    (IMPLIED_HEADER, "implied_move"),
+    ("realised move", "realized_move"),
+)
+
+
+def _change_rows(before: Sequence[PanelRow], after: Sequence[PanelRow]) -> list[list[str]]:
+    """Per column: events whose cell went empty->filled, filled->empty, or changed value."""
+    after_by_id = {r.event_id: r for r in after}
+    rows: list[list[str]] = []
+    for label, field in _CELLS:
+        filled = emptied = changed = 0
+        for old in before:
+            a, b = getattr(old, field), getattr(after_by_id[old.event_id], field)
             filled += a is None and b is not None
             emptied += a is not None and b is None
-    return filled, emptied
+            changed += a is not None and b is not None and a != b
+        rows.append([label, str(filled), str(emptied), str(changed)])
+    return rows
 
 
 _FIELDS = ("market_id", "market_prob", "implied_move", "realized_move")
@@ -273,7 +286,7 @@ def render_demo(
     store, events = build_store(offline, now)
     try:
         eve = eve_panel(store, until=now)
-        later = event_panel(store, now)
+        later = eve_panel(store, lead=-_AFTER, until=now - _AFTER)
         statuses = demo_health(store, now, offline)
     finally:
         store.close()
@@ -303,21 +316,16 @@ def render_demo(
         priced = sum(1 for r in eve if r.kind == kind and r.market_prob is not None)
         if priced < _MIN_PER_KIND:
             out.append(f"Note: only {priced} {kind} events here have a recorded market price.")
-    out += ["", "2. Same events, as known now", table(*_panel_cells(later))]
-    filled, emptied = _changes(eve, later)
-    realised = sum(
-        1
-        for a in eve
-        for b in later
-        if a.event_id == b.event_id and a.realized_move is None and b.realized_move is not None
-    )
+    out += ["", "2. The same events, as known two days after each", table(*_panel_cells(later))]
     out += [
         "",
-        "3. What changed",
-        f"{filled} cells went from empty to filled once later data arrived"
-        f" ({realised} are realised moves, known only after the close).",
-        f"{emptied} cells went from filled to empty: an implied move is only defined before its"
-        " event, and a market price older than 7 days counts as unknown.",
+        "3. What changed between the two tables (number of events)",
+        table(
+            ["column", "empty to filled", "filled to empty", "value changed"],
+            _change_rows(eve, later),
+        ),
+        "A realised move exists only once the close is known; an implied move is only defined"
+        " before its event.",
         *(
             [
                 "Each row in table 1 was recomputed from a store holding only data known at its"

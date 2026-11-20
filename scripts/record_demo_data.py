@@ -41,7 +41,7 @@ RECORDED_END = datetime(2026, 11, 20, tzinfo=UTC)
 LEAD_DAYS = 9  # price history kept from this many days before each event
 TOLERANCE = timedelta(hours=36)
 KALSHI_SERIES = {"KXFEDDECISION": "FOMC", "KXCPI": "CPI"}
-MAX_MARKETS_PER_EVENT = 5  # whole markets beyond this many per event are dropped
+MAX_MARKETS_PER_EVENT = 20  # a safety cap; whole markets beyond it would be dropped
 
 SESSION = requests.Session()
 SESSION.headers["User-Agent"] = DEFAULT_USER_AGENT
