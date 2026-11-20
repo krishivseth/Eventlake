@@ -113,6 +113,13 @@ def test_no_leak_property() -> None:
             at = snap.at("f", sid, series[0].event_time)
             assert at is not None and at.knowledge_time <= ts
         assert all(sid in snap.series_ids("f") for sid in snap.series_ids("f", "s"))
+        for sid in range(5):
+            expected: dict[datetime, float] = {}
+            for (s_id, _ev, _kt), o in sorted(rows.items(), key=lambda kv: kv[0][2]):
+                if s_id == sid and o.knowledge_time <= ts:
+                    expected[o.event_time] = o.value  # brute force: latest kt <= ts wins
+            got = {o.event_time: o.value for o in snap.series("f", f"s{sid}")}
+            assert got == expected
 
 
 def test_persists_across_reopen(tmp_path: Path) -> None:
@@ -158,11 +165,25 @@ def test_same_key_changed_value_becomes_observed_revision() -> None:
     assert s.append([revised], ingested_at=D(7)) == 0
 
 
+def test_value_that_reverts_is_stored_as_a_new_version() -> None:
+    s = Store()
+    assert s.append([Observation("f", "x", D(1), D(2), 1.0)], ingested_at=D(2)) == 1
+    assert s.append([Observation("f", "x", D(1), D(2), 2.0)], ingested_at=D(5)) == 1
+    assert s.append([Observation("f", "x", D(1), D(2), 1.0)], ingested_at=D(8)) == 1
+    stored = s.execute("SELECT knowledge_time, value FROM observations ORDER BY knowledge_time")
+    assert stored == [(D(2), 1.0), (D(5), 2.0), (D(8), 1.0)]
+    now = s.as_of(D(20)).at("f", "x", D(1))
+    assert now is not None and now.value == 1.0 and now.kt_quality == "observed"
+    assert s.as_of(D(6)).at("f", "x", D(1)).value == 2.0  # type: ignore[union-attr]
+    assert s.append([Observation("f", "x", D(1), D(2), 1.0)], ingested_at=D(9)) == 0
+    assert s.append([Observation("f", "x", D(1), D(2), 2.0)], ingested_at=D(9)) == 1
+
+
 def test_collision_with_backdated_ingest_raises_and_rolls_back() -> None:
     s = Store()
     s.append([Observation("f", "x", D(1), D(5), 1.0)])
     batch = [Observation("f", "y", D(1), D(2), 9.0), Observation("f", "x", D(1), D(5), 2.0)]
-    with pytest.raises(ValidationError, match="x"):
+    with pytest.raises(ValidationError, match=r"'x', '2026-03-01T00:00:00\+00:00'"):
         s.append(batch, ingested_at=D(5))
     assert s.as_of(D(30)).series("f", "y") == []
     assert [o.value for o in s.as_of(D(30)).series("f", "x")] == [1.0]

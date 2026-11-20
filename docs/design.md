@@ -4,19 +4,27 @@
 
 The `observations` table has primary key `(feed, series_id, event_time, knowledge_time)`.
 `Store.append` runs as one transaction and takes the incoming rows in `knowledge_time` order.
-For each row it looks up the version visible at that row's knowledge time: the stored row with
-the same `(feed, series_id, event_time)` and the greatest `knowledge_time` not after it.
+Each row is handled by one of two rules, depending on whether its exact key is already stored.
+
+New key. The row is compared with the version visible at its knowledge time: the stored row
+with the same `(feed, series_id, event_time)` and the greatest `knowledge_time` not after it.
 
 - If that version has the same value, the row is skipped. Re-running a window therefore writes
   nothing, and resending an unchanged value with a later knowledge time adds no version.
 - Otherwise the row is inserted as a new version.
-- If the exact key is already stored with a different value (a source that re-publishes a
-  number under the same assumed knowledge time), the row is stored under
-  `knowledge_time = ingested_at` with `kt_quality = "observed"`: the revision is dated when
-  eventlake first saw it. `ValidationError` is raised, and the transaction rolls back, if
-  `ingested_at` is not later than the key, or if the revision's own key (the same series and
-  `event_time` at `ingested_at`) already holds a different value. The runner then appends row
-  by row and quarantines only the offending ones.
+
+Existing key (a source that re-publishes a number under the same assumed knowledge time). The
+row is compared with the latest stored version of its `(feed, series_id, event_time)`, the one
+with the greatest `knowledge_time` overall, not with the row at its own key.
+
+- If the values are equal, the row is skipped.
+- Otherwise the row is stored under `knowledge_time = ingested_at` with
+  `kt_quality = "observed"`: the revision is dated when eventlake first saw it. So a value that
+  goes V1, V2, then back to V1 is stored as three versions, and `as_of(now)` returns V1.
+  `ValidationError` is raised, and the transaction rolls back, if `ingested_at` is not later
+  than the key, or if the revision's own key (the same series and `event_time` at
+  `ingested_at`) already holds a different value. The runner then appends row by row and
+  quarantines only the offending ones.
 
 No code path issues `UPDATE` or `DELETE` against the store; `tests/test_store.py` checks the
 source for both.

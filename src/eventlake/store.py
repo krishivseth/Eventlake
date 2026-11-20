@@ -83,6 +83,12 @@ SELECT value FROM observations
 WHERE feed = ? AND series_id = ? AND event_time = ? AND knowledge_time = ?
 """
 
+_LATEST_VERSION = """
+SELECT value FROM observations
+WHERE feed = ? AND series_id = ? AND event_time = ?
+ORDER BY knowledge_time DESC LIMIT 1
+"""
+
 
 def _dumps(obj: Any) -> str:
     return json.dumps(obj, default=str, sort_keys=True)
@@ -105,9 +111,11 @@ class Store:
         """Insert rows that change a series' value as of their knowledge time.
 
         Returns the number of rows inserted. The call is one transaction. A row whose key
-        (feed, series_id, event_time, knowledge_time) is already stored with a different value
-        is stored as a new revision with ``knowledge_time = ingested_at`` and kt_quality
-        "observed"; if ``ingested_at`` is not later than that key, ``ValidationError`` is raised.
+        (feed, series_id, event_time, knowledge_time) is already stored is compared with the
+        latest stored version of its (feed, series_id, event_time): equal, it is skipped;
+        different, it is stored as a new revision with ``knowledge_time = ingested_at`` and
+        kt_quality "observed". If ``ingested_at`` is not later than the key, or the revision's
+        own key already holds a different value, ``ValidationError`` is raised.
         """
         ingested = utc(ingested_at) if ingested_at is not None else datetime.now(UTC)
         rows = sorted(obs, key=lambda o: o.knowledge_time)
@@ -116,6 +124,8 @@ class Store:
         try:
             for incoming in rows:
                 o = self._resolve_collision(incoming, ingested)
+                if o is None:
+                    continue
                 prior = self._con.execute(
                     _STORED_VERSION,
                     [o.feed, o.series_id, o.event_time, o.knowledge_time],
@@ -142,13 +152,17 @@ class Store:
             raise
         return inserted
 
-    def _resolve_collision(self, o: Observation, ingested: datetime) -> Observation:
+    def _resolve_collision(self, o: Observation, ingested: datetime) -> Observation | None:
+        """``o`` unchanged if its exact key is new; else ``None`` (skip) or its revision."""
         same_key = self._con.execute(
             _SAME_KEY, [o.feed, o.series_id, o.event_time, o.knowledge_time]
         )
-        stored = same_key.fetchone()
-        if stored is None or stored[0] == o.value:
+        if same_key.fetchone() is None:
             return o
+        latest = self._con.execute(_LATEST_VERSION, [o.feed, o.series_id, o.event_time])
+        stored = latest.fetchone()
+        if stored is not None and stored[0] == o.value:
+            return None
         key = (o.feed, o.series_id, o.event_time.isoformat(), o.knowledge_time.isoformat())
         if ingested <= o.knowledge_time:
             raise ValidationError(
@@ -173,6 +187,7 @@ class Store:
         return Snapshot(self._con, utc(ts))
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> list[tuple[Any, ...]]:
+        """Run SQL against the reference tables; observations are read through ``Snapshot``."""
         cur = self._con.execute(sql, list(params))
         if cur.description is None:
             return []

@@ -113,7 +113,7 @@ updated or deleted. Two guarantees are enforced by tests:
   `tests/test_store.py` (`test_no_leak_property`, randomised) and `tests/test_panel.py`
   (`test_panel_no_leak`, which appends later revisions and checks the panel is unchanged).
 - Re-ingesting does not duplicate versions: a row is stored only if its value differs from the
-  version visible at its knowledge time (`tests/test_store.py::test_reingest_is_idempotent`,
+  version it would supersede (`tests/test_store.py::test_reingest_is_idempotent`,
   `tests/test_runner.py::test_rerun_same_window_writes_zero`).
 
 ## Feeds
