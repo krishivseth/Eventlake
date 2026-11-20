@@ -1,0 +1,50 @@
+"""Core types. Every datetime crossing a module boundary is timezone-aware UTC."""
+
+import math
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, Literal
+
+KtQuality = Literal["observed", "source", "assumed"]
+
+
+class ValidationError(ValueError):
+    """Raised when a value violates a core invariant."""
+
+
+def utc(dt: datetime) -> datetime:
+    """Return ``dt`` converted to UTC. Naive datetimes raise ``ValueError``."""
+    if dt.tzinfo is None or dt.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
+    return dt.astimezone(UTC)
+
+
+def parse_utc(s: str) -> datetime:
+    """Parse an ISO-8601 string with an offset or trailing ``Z`` into UTC."""
+    return utc(datetime.fromisoformat(s))
+
+
+@dataclass(frozen=True, slots=True)
+class Observation:
+    feed: str
+    series_id: str
+    event_time: datetime
+    knowledge_time: datetime
+    value: float
+    kt_quality: KtQuality = "observed"
+    attrs: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.feed:
+            raise ValidationError("feed must be non-empty")
+        if not self.series_id:
+            raise ValidationError("series_id must be non-empty")
+        for name in ("event_time", "knowledge_time"):
+            dt: datetime = getattr(self, name)
+            if dt.tzinfo is None or dt.utcoffset() is None:
+                raise ValidationError(f"{name} must be timezone-aware")
+        if not math.isfinite(self.value):
+            raise ValidationError("value must be finite")
+        if self.knowledge_time < self.event_time:
+            raise ValidationError("knowledge_time must not precede event_time")

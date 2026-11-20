@@ -1,0 +1,43 @@
+[project]
+name = "eventlake"
+version = "0.1.0"
+description = "Point-in-time data platform for prediction-market, options, macro and weather feeds."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb",
+    "requests",
+    "fastapi",
+    "uvicorn",
+    "typer",
+    "pyarrow",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "responses",
+    "httpx",
+    "ruff",
+    "mypy",
+    "types-requests",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.12,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+strict = true
+files = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
