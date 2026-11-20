@@ -7,13 +7,14 @@ Every observation row carries ``event_time`` and ``knowledge_time``. Reads go th
 
 import json
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
 import duckdb
 
-from eventlake.types import KtQuality, Observation, utc
+from eventlake.types import KtQuality, Observation, ValidationError, utc
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS observations (
@@ -77,6 +78,12 @@ ORDER BY knowledge_time DESC LIMIT 1
 """
 
 
+_SAME_KEY = """
+SELECT value FROM observations
+WHERE feed = ? AND series_id = ? AND event_time = ? AND knowledge_time = ?
+"""
+
+
 def _dumps(obj: Any) -> str:
     return json.dumps(obj, default=str, sort_keys=True)
 
@@ -97,14 +104,18 @@ class Store:
     def append(self, obs: Iterable[Observation], *, ingested_at: datetime | None = None) -> int:
         """Insert rows that change a series' value as of their knowledge time.
 
-        Returns the number of rows inserted. The call is one transaction.
+        Returns the number of rows inserted. The call is one transaction. A row whose key
+        (feed, series_id, event_time, knowledge_time) is already stored with a different value
+        is stored as a new revision with ``knowledge_time = ingested_at`` and kt_quality
+        "observed"; if ``ingested_at`` is not later than that key, ``ValidationError`` is raised.
         """
         ingested = utc(ingested_at) if ingested_at is not None else datetime.now(UTC)
         rows = sorted(obs, key=lambda o: o.knowledge_time)
         inserted = 0
         self._con.execute("BEGIN TRANSACTION")
         try:
-            for o in rows:
+            for incoming in rows:
+                o = self._resolve_collision(incoming, ingested)
                 prior = self._con.execute(
                     _STORED_VERSION,
                     [o.feed, o.series_id, o.event_time, o.knowledge_time],
@@ -130,6 +141,26 @@ class Store:
             self._con.execute("ROLLBACK")
             raise
         return inserted
+
+    def _resolve_collision(self, o: Observation, ingested: datetime) -> Observation:
+        same_key = self._con.execute(
+            _SAME_KEY, [o.feed, o.series_id, o.event_time, o.knowledge_time]
+        )
+        stored = same_key.fetchone()
+        if stored is None or stored[0] == o.value:
+            return o
+        key = (o.feed, o.series_id, o.event_time.isoformat(), o.knowledge_time.isoformat())
+        if ingested <= o.knowledge_time:
+            raise ValidationError(
+                f"changed value for existing key {key} with ingested_at not later"
+            )
+        revised = replace(o, knowledge_time=ingested, kt_quality="observed")
+        again = self._con.execute(
+            _SAME_KEY, [o.feed, o.series_id, o.event_time, revised.knowledge_time]
+        ).fetchone()
+        if again is not None and again[0] != o.value:
+            raise ValidationError(f"revision for key {key} collides at ingested_at")
+        return revised
 
     def quarantine(self, feed: str, raw: Any, reason: str, *, at: datetime | None = None) -> None:
         when = utc(at) if at is not None else datetime.now(UTC)

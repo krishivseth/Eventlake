@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from eventlake.store import Store
-from eventlake.types import Observation
+from eventlake.types import Observation, ValidationError
 
 
 def D(d: int, h: int = 0) -> datetime:
@@ -144,12 +144,27 @@ def test_execute_returns_utc_datetimes_and_accepts_params() -> None:
     assert rows[0][1].utcoffset().total_seconds() == 0  # type: ignore[union-attr]
 
 
-def test_failed_append_rolls_back() -> None:
+def test_same_key_changed_value_becomes_observed_revision() -> None:
     s = Store()
-    s.append([Observation("f", "x", D(1), D(2), 1.0)])
-    bad = [Observation("f", "x", D(2), D(3), 2.0), Observation("f", "x", D(1), D(2), 9.0)]
-    with pytest.raises(Exception):  # noqa: B017 - same-key conflict from the store
-        s.append(bad)
+    s.append([Observation("f", "x", D(1), D(2), 1.0, "source", {"v": 1})])
+    revised = Observation("f", "x", D(1), D(2), 1.5, "source", {"v": 2})
+    assert s.append([revised], ingested_at=D(6)) == 1
+    old = s.as_of(D(5)).at("f", "x", D(1))
+    new = s.as_of(D(6)).at("f", "x", D(1))
+    assert old is not None and old.value == 1.0
+    assert new is not None and new.value == 1.5
+    assert new.kt_quality == "observed" and new.knowledge_time == D(6)
+    assert new.attrs == {"v": 2}
+    assert s.append([revised], ingested_at=D(7)) == 0
+
+
+def test_collision_with_backdated_ingest_raises_and_rolls_back() -> None:
+    s = Store()
+    s.append([Observation("f", "x", D(1), D(5), 1.0)])
+    batch = [Observation("f", "y", D(1), D(2), 9.0), Observation("f", "x", D(1), D(5), 2.0)]
+    with pytest.raises(ValidationError, match="x"):
+        s.append(batch, ingested_at=D(5))
+    assert s.as_of(D(30)).series("f", "y") == []
     assert [o.value for o in s.as_of(D(30)).series("f", "x")] == [1.0]
 
 
