@@ -1,0 +1,105 @@
+{
+ "candlesticks": [
+  {
+   "end_period_ts": 1792468800,
+   "open_interest_fp": "1910364.48",
+   "price": {
+    "close_dollars": "0.8600",
+    "high_dollars": "0.8700",
+    "low_dollars": "0.8500",
+    "mean_dollars": "0.8607",
+    "open_dollars": "0.8700",
+    "previous_dollars": "0.8700"
+   },
+   "volume_fp": "114290.40",
+   "yes_ask": {
+    "close_dollars": "0.8600",
+    "high_dollars": "0.8700",
+    "low_dollars": "0.8600",
+    "open_dollars": "0.8700"
+   },
+   "yes_bid": {
+    "close_dollars": "0.8500",
+    "high_dollars": "0.8600",
+    "low_dollars": "0.8500",
+    "open_dollars": "0.8600"
+   }
+  },
+  {
+   "end_period_ts": 1792555200,
+   "open_interest_fp": "2025347.01",
+   "price": {
+    "close_dollars": "0.8800",
+    "high_dollars": "0.8800",
+    "low_dollars": "0.8500",
+    "mean_dollars": "0.8737",
+    "open_dollars": "0.8600",
+    "previous_dollars": "0.8600"
+   },
+   "volume_fp": "141397.97",
+   "yes_ask": {
+    "close_dollars": "0.8800",
+    "high_dollars": "0.8800",
+    "low_dollars": "0.8600",
+    "open_dollars": "0.8600"
+   },
+   "yes_bid": {
+    "close_dollars": "0.8700",
+    "high_dollars": "0.8700",
+    "low_dollars": "0.8500",
+    "open_dollars": "0.8500"
+   }
+  },
+  {
+   "end_period_ts": 1792641600,
+   "open_interest_fp": "2301840.64",
+   "price": {
+    "close_dollars": "0.8900",
+    "high_dollars": "0.8900",
+    "low_dollars": "0.8700",
+    "mean_dollars": "0.8856",
+    "open_dollars": "0.8800",
+    "previous_dollars": "0.8800"
+   },
+   "volume_fp": "343885.21",
+   "yes_ask": {
+    "close_dollars": "0.8900",
+    "high_dollars": "0.8900",
+    "low_dollars": "0.8800",
+    "open_dollars": "0.8800"
+   },
+   "yes_bid": {
+    "close_dollars": "0.8800",
+    "high_dollars": "0.8800",
+    "low_dollars": "0.8700",
+    "open_dollars": "0.8700"
+   }
+  },
+  {
+   "end_period_ts": 1792728000,
+   "open_interest_fp": "2491544.06",
+   "price": {
+    "close_dollars": "0.9400",
+    "high_dollars": "0.9400",
+    "low_dollars": "0.8800",
+    "mean_dollars": "0.9171",
+    "open_dollars": "0.8900",
+    "previous_dollars": "0.8900"
+   },
+   "volume_fp": "415825.07",
+   "yes_ask": {
+    "close_dollars": "0.9400",
+    "high_dollars": "0.9400",
+    "low_dollars": "0.8900",
+    "open_dollars": "0.8900"
+   },
+   "yes_bid": {
+    "close_dollars": "0.9300",
+    "high_dollars": "0.9300",
+    "low_dollars": "0.8800",
+    "open_dollars": "0.8800"
+   }
+  }
+ ],
+ "ticker": "KXFEDDECISION-26OCT-H0"
+}
