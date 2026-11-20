@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS observations (
     kt_quality TEXT NOT NULL,
     attrs JSON,
     ingested_at TIMESTAMPTZ NOT NULL,
+    revision_of TIMESTAMPTZ,
     PRIMARY KEY (feed, series_id, event_time, knowledge_time)
 );
 CREATE TABLE IF NOT EXISTS quarantine (
@@ -72,22 +73,24 @@ CREATE TABLE IF NOT EXISTS links (
 _COLUMNS = "feed, series_id, event_time, knowledge_time, value, kt_quality, attrs"
 
 _STORED_VERSION = """
-SELECT value FROM observations
+SELECT knowledge_time, value FROM observations
 WHERE feed = ? AND series_id = ? AND event_time = ? AND knowledge_time <= ?
 ORDER BY knowledge_time DESC LIMIT 1
 """
 
+_LINEAGE_CURRENT = """
+SELECT knowledge_time, value FROM observations
+WHERE feed = ? AND series_id = ? AND event_time = ?
+  AND ((knowledge_time = ? AND revision_of IS NULL) OR revision_of = ?)
+ORDER BY knowledge_time DESC LIMIT 1
+"""
 
-_SAME_KEY = """
+_AT_KNOWLEDGE_TIME = """
 SELECT value FROM observations
 WHERE feed = ? AND series_id = ? AND event_time = ? AND knowledge_time = ?
 """
 
-_LATEST_VERSION = """
-SELECT value FROM observations
-WHERE feed = ? AND series_id = ? AND event_time = ?
-ORDER BY knowledge_time DESC LIMIT 1
-"""
+_Key = tuple[str, str, datetime, datetime]
 
 
 def _dumps(obj: Any) -> str:
@@ -108,32 +111,41 @@ class Store:
         self._con.execute(_SCHEMA)
 
     def append(self, obs: Iterable[Observation], *, ingested_at: datetime | None = None) -> int:
-        """Insert rows that change a series' value as of their knowledge time.
+        """Store the rows that change what is known; return how many rows were inserted.
 
-        Returns the number of rows inserted. The call is one transaction. A row whose key
-        (feed, series_id, event_time, knowledge_time) is already stored is compared with the
-        latest stored version of its (feed, series_id, event_time): equal, it is skipped;
-        different, it is stored as a new revision with ``knowledge_time = ingested_at`` and
-        kt_quality "observed". If ``ingested_at`` is not later than the key, or the revision's
-        own key already holds a different value, ``ValidationError`` is raised.
+        The call is one transaction. Rows sharing an exact key (feed, series_id, event_time,
+        knowledge_time) are first collapsed to the last one given; the rest are handled in
+        ``knowledge_time`` order.
+
+        A row whose key K was stored before belongs to K's lineage: the row stored at K plus
+        every revision of K. It is compared with the lineage's current value, the value of its
+        row with the greatest knowledge time. Equal, it is skipped. Different, it is stored as a
+        revision of K with ``knowledge_time = ingested_at`` and kt_quality "observed".
+
+        A row whose key is new is compared with the stored version visible at its knowledge
+        time (the greatest ``knowledge_time`` not after it): equal, it is skipped; otherwise it
+        is inserted at its own knowledge time.
+
+        ``ValidationError`` is raised, and nothing from the call is stored, if a revision's
+        ``ingested_at`` is not later than its lineage's latest knowledge time, or if a row would
+        be stored where a different value already sits at the same knowledge time.
         """
         ingested = utc(ingested_at) if ingested_at is not None else datetime.now(UTC)
-        rows = sorted(obs, key=lambda o: o.knowledge_time)
+        last: dict[_Key, Observation] = {}
+        for o in obs:
+            last[(o.feed, o.series_id, o.event_time, o.knowledge_time)] = o
+        rows = sorted(last.values(), key=lambda o: o.knowledge_time)
         inserted = 0
         self._con.execute("BEGIN TRANSACTION")
         try:
             for incoming in rows:
-                o = self._resolve_collision(incoming, ingested)
-                if o is None:
+                resolved = self._resolve(incoming, ingested)
+                if resolved is None:
                     continue
-                prior = self._con.execute(
-                    _STORED_VERSION,
-                    [o.feed, o.series_id, o.event_time, o.knowledge_time],
-                ).fetchone()
-                if prior is not None and prior[0] == o.value:
-                    continue
+                o, revision_of = resolved
                 self._con.execute(
-                    f"INSERT INTO observations ({_COLUMNS}, ingested_at) VALUES (?,?,?,?,?,?,?,?)",
+                    f"INSERT INTO observations ({_COLUMNS}, ingested_at, revision_of)"
+                    " VALUES (?,?,?,?,?,?,?,?,?)",
                     [
                         o.feed,
                         o.series_id,
@@ -143,6 +155,7 @@ class Store:
                         o.kt_quality,
                         _dumps(dict(o.attrs)),
                         ingested,
+                        revision_of,
                     ],
                 )
                 inserted += 1
@@ -152,29 +165,36 @@ class Store:
             raise
         return inserted
 
-    def _resolve_collision(self, o: Observation, ingested: datetime) -> Observation | None:
-        """``o`` unchanged if its exact key is new; else ``None`` (skip) or its revision."""
-        same_key = self._con.execute(
-            _SAME_KEY, [o.feed, o.series_id, o.event_time, o.knowledge_time]
-        )
-        if same_key.fetchone() is None:
-            return o
-        latest = self._con.execute(_LATEST_VERSION, [o.feed, o.series_id, o.event_time])
-        stored = latest.fetchone()
-        if stored is not None and stored[0] == o.value:
-            return None
+    def _resolve(
+        self, o: Observation, ingested: datetime
+    ) -> tuple[Observation, datetime | None] | None:
+        """``None`` to skip ``o``, else the row to insert and the source key it revises."""
+        series = [o.feed, o.series_id, o.event_time]
         key = (o.feed, o.series_id, o.event_time.isoformat(), o.knowledge_time.isoformat())
-        if ingested <= o.knowledge_time:
+        current = self._con.execute(
+            _LINEAGE_CURRENT, [*series, o.knowledge_time, o.knowledge_time]
+        ).fetchone()
+        if current is None:
+            prior = self._con.execute(_STORED_VERSION, [*series, o.knowledge_time]).fetchone()
+            if prior is not None and prior[1] == o.value:
+                return None
+            if prior is not None and prior[0] == o.knowledge_time:
+                raise ValidationError(f"new key {key} collides with a stored revision")
+            return o, None
+        latest_known, value = current
+        if value == o.value:
+            return None
+        if ingested <= latest_known:
             raise ValidationError(
                 f"changed value for existing key {key} with ingested_at not later"
+                " than its latest version"
             )
-        revised = replace(o, knowledge_time=ingested, kt_quality="observed")
-        again = self._con.execute(
-            _SAME_KEY, [o.feed, o.series_id, o.event_time, revised.knowledge_time]
-        ).fetchone()
-        if again is not None and again[0] != o.value:
+        occupied = self._con.execute(_AT_KNOWLEDGE_TIME, [*series, ingested]).fetchone()
+        if occupied is not None:
+            if occupied[0] == o.value:
+                return None
             raise ValidationError(f"revision for key {key} collides at ingested_at")
-        return revised
+        return replace(o, knowledge_time=ingested, kt_quality="observed"), o.knowledge_time
 
     def quarantine(self, feed: str, raw: Any, reason: str, *, at: datetime | None = None) -> None:
         when = utc(at) if at is not None else datetime.now(UTC)

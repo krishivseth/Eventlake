@@ -110,7 +110,8 @@ returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or dele
   `tests/test_store.py` (`test_no_leak_property`, randomised) and `tests/test_panel.py`
   (`test_panel_no_leak`, which appends later revisions and checks the panel is unchanged).
 - Re-ingesting does not duplicate versions: a row is stored only if its value differs from the
-  version it would supersede (`tests/test_store.py::test_reingest_is_idempotent`,
+  latest value stored for its source key, or, for a key not seen before, from the version
+  visible at its knowledge time (`tests/test_store.py::test_reingest_is_idempotent`,
   `tests/test_runner.py::test_rerun_same_window_writes_zero`).
 
 ## Feeds

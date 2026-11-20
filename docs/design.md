@@ -3,28 +3,48 @@
 ## Append rule
 
 The `observations` table has primary key `(feed, series_id, event_time, knowledge_time)`.
-`Store.append` runs as one transaction and takes the incoming rows in `knowledge_time` order.
-Each row is handled by one of two rules, depending on whether its exact key is already stored.
+`Store.append` runs as one transaction. It first collapses incoming rows that share an exact
+key to the last one given, so one batch cannot revise itself, then takes the rows in
+`knowledge_time` order. Each row is handled by one of two rules, depending on whether a row
+was already stored at its source key K (its own `knowledge_time`).
 
-New key. The row is compared with the version visible at its knowledge time: the stored row
-with the same `(feed, series_id, event_time)` and the greatest `knowledge_time` not after it.
+Lineage. A row stored at its own source knowledge time has an empty internal `revision_of`
+column. A revision (below) stores, in `revision_of`, the source key K it revises. The lineage
+of K, for one `(feed, series_id, event_time)`, is the row stored at K plus every revision of
+K. Its current value is the value of its row with the greatest `knowledge_time`.
+`revision_of` is never returned by a `Snapshot`.
+
+New key (nothing stored at K). The row is compared with the version visible at K: the stored
+row with the same `(feed, series_id, event_time)` and the greatest `knowledge_time` not after
+K.
 
 - If that version has the same value, the row is skipped. Re-running a window therefore writes
   nothing, and resending an unchanged value with a later knowledge time adds no version.
-- Otherwise the row is inserted as a new version.
+- Otherwise the row is inserted at K as a new version.
 
-Existing key (a source that re-publishes a number under the same assumed knowledge time). The
-row is compared with the latest stored version of its `(feed, series_id, event_time)`, the one
-with the greatest `knowledge_time` overall, not with the row at its own key.
+Existing key (a source that re-publishes a number under the same knowledge time K). The row is
+compared with the current value of K's lineage, not with versions that belong to other source
+keys.
 
-- If the values are equal, the row is skipped.
-- Otherwise the row is stored under `knowledge_time = ingested_at` with
-  `kt_quality = "observed"`: the revision is dated when eventlake first saw it. So a value that
-  goes V1, V2, then back to V1 is stored as three versions, and `as_of(now)` returns V1.
-  `ValidationError` is raised, and the transaction rolls back, if `ingested_at` is not later
-  than the key, or if the revision's own key (the same series and `event_time` at
-  `ingested_at`) already holds a different value. The runner then appends row by row and
-  quarantines only the offending ones.
+- If the values are equal, the row is skipped. Re-sending an older vintage, or a batch of
+  several vintages, that has not changed therefore writes nothing.
+- Otherwise the row is stored as a revision of K, under `knowledge_time = ingested_at` with
+  `kt_quality = "observed"`: the revision is dated when eventlake first saw it, because the
+  store cannot back-date the change. So a value that goes V1, V2, then back to V1 is stored
+  as three versions, and `as_of(now)` returns V1. A revision is the newest knowledge of its
+  `event_time`, so `as_of(now)` returns it even if another vintage has a later source key.
+
+Two guards raise `ValidationError`, and the whole call rolls back: a revision whose
+`ingested_at` is not later than its lineage's latest `knowledge_time`, and a row that would be
+stored at a knowledge time where the same series and `event_time` already hold a different
+value (two vintages revised to different values in one call, or a new key whose time equals an
+earlier revision's). The runner then appends row by row and quarantines only the offending
+ones. A row whose value equals the one already at that time is skipped.
+
+Two limits follow from skipping unchanged rows. A new key skipped because it equalled the
+version before it leaves nothing stored at its K: if the source later changes that key's value,
+the change is inserted at K rather than dated as a revision, and if an older vintage later
+arrives between K and its predecessor, re-sending K stores it then.
 
 A run whose `fetch` fails part-way still appends the observations normalised before the
 failure, in the same single transaction as any other batch. This is deliberate: each of those
