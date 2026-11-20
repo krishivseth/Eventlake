@@ -90,10 +90,9 @@ flowchart LR
     H --> A
 ```
 
-Collectors only fetch and normalise. `runner.run_collector` validates, quarantines bad records,
-appends the batch in one transaction and writes one `feed_runs` row per run, which the health
-checks read. `Snapshot` is the only read path for observations. Design notes:
-[docs/design.md](docs/design.md).
+Collectors only fetch and normalise; `runner.run_collector` validates, quarantines bad records,
+appends each batch in one transaction and writes one `feed_runs` row per run for the health
+checks. `Snapshot` is the only read path for observations ([design notes](docs/design.md)).
 
 ## Point-in-time model
 
@@ -104,10 +103,9 @@ schedule), `observed` (the time eventlake fetched it) or `assumed` (a fixed lag 
 
 Revision example, illustrative numbers: FRED's keyless CSV gives the SP500 close for
 2026-03-02 as 6850.10, stored with `knowledge_time` 2026-03-03T00:00Z (`assumed`). A run on
-2026-03-20 finds 6851.40 for the same date. Same key, different value, so the store appends a
-second version with `knowledge_time` set to that run's start and `kt_quality` `observed`.
-`as_of(2026-03-10)` still returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is
-updated or deleted. Two guarantees are enforced by tests:
+2026-03-20 finds 6851.40 for the same key, so the store appends a second version with
+`knowledge_time` set to that run's start and `kt_quality` `observed`. `as_of(2026-03-10)` still
+returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or deleted. Tested:
 
 - No read returns a row whose `knowledge_time` is after the as-of time:
   `tests/test_store.py` (`test_no_leak_property`, randomised) and `tests/test_panel.py`
@@ -170,16 +168,23 @@ updated or deleted. Two guarantees are enforced by tests:
 Configuration is by environment variable (see `.env.example`): `EVENTLAKE_DB` (default
 `data/eventlake.duckdb`), `TRADIER_TOKEN` and `TRADIER_BASE` (default the Tradier sandbox),
 `EVENTLAKE_CONTACT` (required by the EDGAR feed), `EVENTLAKE_ALERT_WEBHOOK`. `backfill` skips
-a collector whose setting is missing and says so. `health` checks only feeds that have run at
-least once and lists the rest as not configured; three empty runs in a row fail a feed.
+a collector whose setting is missing and says so.
 
 ```
 uv run eventlake backfill --start 2025-01-01       # calendar, markets, every collector, links
-uv run eventlake ingest kalshi --start 2026-11-01  # one feed over a window
+uv run eventlake ingest kalshi                     # one feed over the last 7 days
 uv run eventlake health --alert                    # exit 1 and post to the webhook if a feed fails
 uv run eventlake export panel.parquet              # day-before-event panel as Parquet
-uv run eventlake serve --port 8000                 # read-only API: /events /observations /panel /feeds
+uv run eventlake serve --port 8000                 # read-only API: /events /markets /observations /panel /feeds
 ```
+
+To keep the store current, schedule `ingest <feed>` daily for each feed, then `health --alert`.
+For `kalshi` and `polymarket`, `ingest` also lists and links the window's markets (`markets: N
+new, links: N new, unlinked: N`); a failed listing is recorded as a failed run and exits 1.
+`GET /markets?linked=false` lists markets no rule could link. `health` checks only feeds that
+have run, listing the rest as not configured; three empty runs in a row fail a feed. A failed
+run keeps the observations it normalised before failing: each is valid on its own and re-runs
+are idempotent, so the next run completes the window.
 
 `serve` binds 127.0.0.1 unless given `--host`. `/observations` and `/panel` take `as_of` as
 ISO-8601 with a UTC offset. The Dockerfile runs `serve --host 0.0.0.0 --port 8000`; the store

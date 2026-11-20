@@ -3,10 +3,11 @@ from datetime import UTC, datetime, timedelta
 from fastapi.testclient import TestClient
 
 from eventlake.api import create_app
+from eventlake.entities import upsert_markets
 from eventlake.health import POLICIES
 from eventlake.panel import event_panel
 from eventlake.store import Store
-from panel_helpers import build_store, utc_at
+from panel_helpers import build_store, kalshi_market, utc_at
 
 
 def _client() -> TestClient:
@@ -34,6 +35,41 @@ def test_feeds_reports_health_per_feed() -> None:
     assert [f["feed"] for f in body] == sorted(POLICIES)
     assert {c["name"] for c in by_feed["kalshi"]["checks"]} >= {"freshness", "gaps"}
     assert set(by_feed["kalshi"]["checks"][0]) == {"name", "status", "detail"}
+
+
+def test_markets_endpoint_filters_on_linked() -> None:
+    store = build_store()
+    upsert_markets(store, [kalshi_market("KXFED-27JAN-HOLD", utc_at(2027, 1, 27, 19))])
+    client = TestClient(create_app(store))
+    every = client.get("/markets").json()
+    linked = client.get("/markets", params={"linked": "true"}).json()
+    unlinked = client.get("/markets", params={"linked": "false"}).json()
+    assert linked and unlinked
+    assert sorted(m["market_id"] for m in linked + unlinked) == sorted(
+        m["market_id"] for m in every
+    )
+    assert all(m["event_id"] for m in linked)
+    assert [m["market_id"] for m in unlinked] == ["kalshi:KXFED-27JAN-HOLD"]
+    assert all(m["event_id"] is None for m in unlinked)
+    assert set(every[0]) == {
+        "market_id",
+        "venue",
+        "series_ticker",
+        "title",
+        "close_time",
+        "event_id",
+    }
+    assert every[0]["close_time"].endswith("+00:00")
+
+
+def test_as_of_defaults_to_the_app_clock() -> None:
+    store = build_store()
+    early = utc_at(2026, 1, 27, 12)
+    client = TestClient(create_app(store, clock=lambda: early))
+    q = {"feed": "fred", "series_id": "SP500"}
+    default = client.get("/observations", params=q).json()
+    explicit = client.get("/observations", params={**q, "as_of": early.isoformat()}).json()
+    assert default == explicit and len(default) == 2
 
 
 def test_api_panel_matches_function() -> None:

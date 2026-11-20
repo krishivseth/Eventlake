@@ -9,6 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from eventlake import cli
+from eventlake.entities import Market
 from eventlake.health import POLICIES
 from eventlake.runner import RunResult
 from eventlake.store import Store
@@ -43,6 +44,34 @@ class Fake:
         return [Observation("fake", "S", t, t, raw["v"])]
 
 
+FOMC_CLOSE = datetime(2026, 3, 18, 17, 55, tzinfo=UTC)  # five minutes before the decision
+
+
+def _market(series: str, ticker: str) -> Market:
+    return Market(f"kalshi:{ticker}", "kalshi", ticker, series, ticker, FOMC_CLOSE, {})
+
+
+class Listing(Fake):
+    """A collector that also lists markets, like the prediction-market feeds."""
+
+    feed = "listing"
+
+    def __init__(self, fail_listing: bool = False) -> None:
+        super().__init__()
+        self.fail_listing = fail_listing
+        self.listed: list[tuple[datetime, datetime]] = []
+
+    def list_markets(self, start: datetime, end: datetime) -> list[Market]:
+        self.listed.append((start, end))
+        if self.fail_listing:
+            raise RuntimeError("listing endpoint down")
+        return [_market("KXFEDDECISION", "FED-26MAR-H0"), _market("OTHER", "OTHER-1")]
+
+    def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
+        t = NOW - timedelta(days=1)
+        return [Observation("listing", "S", t, t, raw["v"])]
+
+
 def runs(db: Path) -> list[tuple[Any, ...]]:
     store = Store(db)
     try:
@@ -64,6 +93,56 @@ def test_ingest_failed_run_exits_one(db: Path, monkeypatch: pytest.MonkeyPatch) 
     result = runner.invoke(cli.app, ["ingest", "fake"])
     assert result.exit_code == 1
     assert "upstream down" in result.output
+
+
+def test_ingest_lists_and_links_markets(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(cli.REGISTRY, "listing", Listing)
+    result = runner.invoke(cli.app, ["ingest", "listing", "--start", "2026-03-01"])
+    assert result.exit_code == 0, result.output
+    assert "markets: 2 new, links: 1 new, unlinked: 1" in result.output
+    assert "listing: ok" in result.output
+    store = Store(db)
+    try:
+        links = store.execute("SELECT event_id, market_id FROM links")
+        assert store.execute("SELECT count(*) FROM events")[0][0] > 0
+    finally:
+        store.close()
+    assert links == [("FOMC:2026-03-18", "kalshi:FED-26MAR-H0")]
+    again = runner.invoke(cli.app, ["ingest", "listing", "--start", "2026-03-01"])
+    assert "markets: 0 new, links: 0 new, unlinked: 1" in again.output
+
+
+def test_ingest_listing_failure_is_recorded_and_exits_one(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(cli.REGISTRY, "listing", lambda: Listing(fail_listing=True))
+    result = runner.invoke(cli.app, ["ingest", "listing"])
+    assert result.exit_code == 1
+    assert "market listing failed: RuntimeError: listing endpoint down" in result.output
+    assert sorted(runs(db)) == [("listing", "failed", 0), ("listing", "ok", 1)]
+    store = Store(db)
+    try:
+        (error,) = store.execute("SELECT error FROM feed_runs WHERE status = 'failed'")[0]
+    finally:
+        store.close()
+    assert error == "market listing failed: RuntimeError: listing endpoint down"
+
+
+def test_backfill_listing_failure_is_recorded_and_exits_one(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "REGISTRY", {"listing": lambda: Listing(fail_listing=True)})
+    result = runner.invoke(cli.app, ["backfill", "--start", "2026-03-01"])
+    assert result.exit_code == 1
+    assert "market listing failed: RuntimeError: listing endpoint down" in result.output
+    assert sorted(runs(db)) == [("listing", "failed", 0), ("listing", "ok", 1)]
+
+
+def test_backfill_prints_unlinked_count(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "REGISTRY", {"listing": Listing})
+    result = runner.invoke(cli.app, ["backfill", "--start", "2026-03-01"])
+    assert result.exit_code == 0, result.output
+    assert "links: 1 new, unlinked: 1" in result.output
 
 
 def test_ingest_unknown_feed_and_missing_config(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -84,7 +84,8 @@ def run_collector(
     Records whose normalisation fails with ``ValidationError``, ``KeyError``, ``TypeError`` or
     ``ValueError`` are quarantined and skipped. Any other exception from ``normalize`` or from
     the ``fetch`` iterator ends the run as ``failed``; observations gathered so far are still
-    appended. The batch is appended with one ``store.append`` call. If that raises
+    appended (each is valid on its own and a re-run is idempotent, so the next run completes
+    the window). The batch is appended with one ``store.append`` call. If that raises
     ``ValidationError`` (nothing was written), each observation is appended individually and
     those that raise ``ValidationError`` are quarantined, so one bad row does not discard the
     rest; the run is then ``partial``. Any other ``append`` exception makes the run ``failed``
@@ -136,19 +137,32 @@ def run_collector(
         finished_at = utc(now())
     except Exception:
         finished_at = started_at
+    result = RunResult(run_id, collector.feed, status, fetched, written, quarantined, error)
+    _record(store, result, started_at, finished_at)
+    return result
+
+
+def _record(store: Store, result: RunResult, started_at: datetime, finished_at: datetime) -> None:
     store.execute(
         "INSERT INTO feed_runs (run_id, feed, started_at, finished_at, status, rows_fetched, "
         "rows_written, rows_quarantined, error) VALUES (?,?,?,?,?,?,?,?,?)",
         [
-            run_id,
-            collector.feed,
+            result.run_id,
+            result.feed,
             started_at,
             finished_at,
-            status,
-            fetched,
-            written,
-            quarantined,
-            error,
+            result.status,
+            result.rows_fetched,
+            result.rows_written,
+            result.rows_quarantined,
+            result.error,
         ],
     )
-    return RunResult(run_id, collector.feed, status, fetched, written, quarantined, error)
+
+
+def record_failure(store: Store, feed: str, error: str, *, at: datetime) -> RunResult:
+    """Write a ``failed`` run row for work outside ``run_collector``, such as a market listing."""
+    when = utc(at)
+    result = RunResult(str(uuid.uuid4()), feed, "failed", 0, 0, 0, error)
+    _record(store, result, when, when)
+    return result

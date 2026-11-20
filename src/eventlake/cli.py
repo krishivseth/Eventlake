@@ -9,13 +9,13 @@ import typer
 
 from eventlake.calendar import load_events, upsert_events
 from eventlake.collectors import REGISTRY
-from eventlake.entities import link_markets, upsert_markets
+from eventlake.entities import link_markets, unlinked_markets, upsert_markets
 from eventlake.health import check_all, send_alert, unconfigured_feeds
 from eventlake.panel import eve_panel, export_parquet
-from eventlake.runner import Collector, RunResult, run_collector
+from eventlake.runner import Collector, RunResult, record_failure, run_collector
 from eventlake.store import Store
 from eventlake.tables import render_health
-from eventlake.types import utc
+from eventlake.types import describe, utc
 
 app = typer.Typer(
     help="Point-in-time data platform for prediction-market, options, macro and weather feeds.",
@@ -54,6 +54,25 @@ def _describe_run(result: RunResult) -> str:
     return f"{text}\n  error: {result.error}" if result.error else text
 
 
+def _store_markets(
+    store: Store, collector: Collector, first: datetime, last: datetime
+) -> int | None:
+    """List and store the collector's markets; ``None`` (with a failed run recorded) on error."""
+    lister: Any = getattr(collector, "list_markets", None)
+    try:
+        return upsert_markets(store, lister(first, last))
+    except Exception as exc:
+        error = f"market listing failed: {describe(exc)}"
+        typer.echo(_describe_run(record_failure(store, collector.feed, error, at=_now())))
+        return None
+
+
+def _link(store: Store, now: datetime) -> str:
+    """Link markets and describe the result, including how many stay unlinked."""
+    new = link_markets(store, now=now)
+    return f"links: {new} new, unlinked: {len(unlinked_markets(store))}"
+
+
 @app.command()
 def ingest(
     feed: Annotated[str, typer.Argument(help="Feed name, e.g. kalshi or fred.")],
@@ -64,7 +83,11 @@ def ingest(
         str | None, typer.Option(help="ISO date or timestamp (UTC); default now.")
     ] = None,
 ) -> None:
-    """Run one collector over a window; exit 1 if the run failed."""
+    """Run one collector over a window; exit 1 if the run or its market listing failed.
+
+    For a prediction-market feed this also loads the calendar, lists and stores the markets
+    for the window and links them to events after the run.
+    """
     if feed not in REGISTRY:
         typer.echo(f"unknown feed {feed!r}; choose from: {', '.join(sorted(REGISTRY))}", err=True)
         raise typer.Exit(2)
@@ -76,13 +99,22 @@ def ingest(
     except Exception as exc:
         typer.echo(f"cannot start {feed}: {exc}", err=True)
         raise typer.Exit(1) from None
+    lists = hasattr(collector, "list_markets")
+    listing_failed = False
     store = _open_store()
     try:
+        if lists:
+            upsert_events(store, load_events())
+            new_markets = _store_markets(store, collector, first, last)
+            listing_failed = new_markets is None
         result = run_collector(collector, store, first, last)
+        typer.echo(_describe_run(result))
+        if lists:
+            links = _link(store, now)
+            typer.echo(links if listing_failed else f"markets: {new_markets} new, {links}")
     finally:
         store.close()
-    typer.echo(_describe_run(result))
-    if result.status == "failed":
+    if result.status == "failed" or listing_failed:
         raise typer.Exit(1)
 
 
@@ -90,7 +122,10 @@ def ingest(
 def backfill(
     start: Annotated[str, typer.Option(help="ISO date or timestamp (UTC).")] = "2025-01-01",
 ) -> None:
-    """Load the calendar and markets, run every configured collector, then link markets."""
+    """Load the calendar and markets, run every configured collector, then link markets.
+
+    Exits 1 if any run or market listing failed.
+    """
     first, now = parse_when(start), _now()
     store = _open_store()
     failed = False
@@ -103,18 +138,18 @@ def backfill(
             except Exception as exc:
                 typer.echo(f"skip {feed}: {exc}")
         for feed, collector in collectors.items():
-            lister: Any = getattr(collector, "list_markets", None)
-            if lister is None:
+            if not hasattr(collector, "list_markets"):
                 continue
-            try:
-                typer.echo(f"markets {feed}: {upsert_markets(store, lister(first, now))} new")
-            except Exception as exc:
-                typer.echo(f"markets {feed}: listing failed: {type(exc).__name__}: {exc}")
+            new_markets = _store_markets(store, collector, first, now)
+            if new_markets is None:
+                failed = True
+            else:
+                typer.echo(f"markets {feed}: {new_markets} new")
         for collector in collectors.values():
             result = run_collector(collector, store, first, now)
             typer.echo(_describe_run(result))
             failed = failed or result.status == "failed"
-        typer.echo(f"links: {link_markets(store, now=now)} new")
+        typer.echo(_link(store, now))
     finally:
         store.close()
     if failed:

@@ -26,6 +26,12 @@ with the greatest `knowledge_time` overall, not with the row at its own key.
   `ingested_at`) already holds a different value. The runner then appends row by row and
   quarantines only the offending ones.
 
+A run whose `fetch` fails part-way still appends the observations normalised before the
+failure, in the same single transaction as any other batch. This is deliberate: each of those
+observations is individually valid, so storing it is never wrong, and because re-ingesting is
+idempotent the next run over the same window adds exactly what the failed run missed. The run
+is recorded as `failed`, so health reports it until a later run succeeds.
+
 No code path issues `UPDATE` or `DELETE` against the store; `tests/test_store.py` checks the
 source for both.
 

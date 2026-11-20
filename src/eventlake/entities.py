@@ -118,6 +118,20 @@ def unlinked_markets(store: Store) -> list[Market]:
     return [_row_to_market(r) for r in rows]
 
 
+def market_links(store: Store, linked: bool | None = None) -> list[tuple[Market, str | None]]:
+    """Stored markets with the event each is linked to (``None`` when unlinked), by market id.
+
+    ``linked`` keeps only linked (``True``) or only unlinked (``False``) markets.
+    """
+    where = {None: "", True: " WHERE l.event_id IS NOT NULL", False: " WHERE l.event_id IS NULL"}
+    rows = store.execute(
+        f"SELECT {_MARKET_COLUMNS}, l.event_id FROM markets m"
+        " LEFT JOIN links l ON l.market_id = m.market_id"
+        f"{where[linked]} ORDER BY m.market_id, l.event_id"
+    )
+    return [(_row_to_market(r[:-1]), r[-1]) for r in rows]
+
+
 def _weather_day(close_time: datetime) -> date:
     """The New York settlement day of a daily-high market.
 

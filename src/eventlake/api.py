@@ -13,6 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
+from eventlake.entities import market_links
 from eventlake.health import check_all, unconfigured_feeds
 from eventlake.panel import event_panel, stored_events
 from eventlake.store import Store
@@ -25,9 +26,9 @@ def _iso(dt: datetime) -> str:
     return utc(dt).isoformat()
 
 
-def _parse_as_of(raw: str | None) -> datetime:
+def _parse_as_of(raw: str | None, clock: Callable[[], datetime]) -> datetime:
     if raw is None:
-        return datetime.now(UTC)
+        return utc(clock())
     try:
         parsed = datetime.fromisoformat(raw)
     except (ValueError, OverflowError):
@@ -47,6 +48,7 @@ def create_app(store: Store, clock: Callable[[], datetime] = lambda: datetime.no
 
     @app.get("/health")
     async def health() -> dict[str, str]:
+        """Liveness probe: answers without touching the store. Feed health is ``/feeds``."""
         return {"status": "ok"}
 
     @app.get("/events")
@@ -57,11 +59,26 @@ def create_app(store: Store, clock: Callable[[], datetime] = lambda: datetime.no
             for e in found
         ]
 
+    @app.get("/markets")
+    async def markets(linked: bool | None = None) -> list[dict[str, Any]]:
+        """Stored markets with their linked event id (null when unlinked); filter on ``linked``."""
+        return [
+            {
+                "market_id": m.market_id,
+                "venue": m.venue,
+                "series_ticker": m.series_ticker,
+                "title": m.title,
+                "close_time": _iso(m.close_time),
+                "event_id": event_id,
+            }
+            for m, event_id in market_links(store, linked)
+        ]
+
     @app.get("/observations")
     async def observations(
         feed: str, series_id: str, as_of: str | None = None
     ) -> list[dict[str, Any]]:
-        snap = store.as_of(_parse_as_of(as_of))
+        snap = store.as_of(_parse_as_of(as_of, clock))
         return [
             {
                 "event_time": _iso(o.event_time),
@@ -75,7 +92,7 @@ def create_app(store: Store, clock: Callable[[], datetime] = lambda: datetime.no
 
     @app.get("/panel")
     async def panel(as_of: str | None = None, kinds: str | None = None) -> list[dict[str, Any]]:
-        when = _parse_as_of(as_of)
+        when = _parse_as_of(as_of, clock)
         wanted = tuple(k for k in kinds.split(",") if k) if kinds else ("FOMC", "CPI")
         rows = event_panel(store, when, wanted)
         return [
