@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 
 import pytest
@@ -43,8 +43,6 @@ def test_utc_rejects_naive() -> None:
 
 
 def test_utc_converts_offset_to_utc() -> None:
-    from datetime import timezone
-
     dt = datetime(2026, 1, 28, 14, 0, tzinfo=timezone(timedelta(hours=-5)))
     assert utc(dt) == T0
     assert utc(dt).utcoffset() == timedelta(0)
