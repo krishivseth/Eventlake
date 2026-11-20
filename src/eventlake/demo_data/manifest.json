@@ -1,0 +1,20 @@
+{
+  "default_now": "2026-11-19T18:00:00+00:00",
+  "recorded": "2026-11-20",
+  "sources": {
+    "kalshi": "api.elections.kalshi.com trade-api/v2 (markets, candlesticks; historical endpoints for settled markets)",
+    "polymarket": "gamma-api.polymarket.com events, clob.polymarket.com prices-history",
+    "fred": "fred.stlouisfed.org fredgraph.csv?id=SP500",
+    "noaa": "ncei.noaa.gov daily-summaries, station USW00094728, TMAX"
+  },
+  "events": [
+    "FOMC:2026-06-17",
+    "FOMC:2026-07-29",
+    "FOMC:2026-09-16",
+    "FOMC:2026-10-28",
+    "CPI:2026-08-12",
+    "CPI:2026-09-11",
+    "CPI:2026-10-14",
+    "CPI:2026-11-10"
+  ]
+}

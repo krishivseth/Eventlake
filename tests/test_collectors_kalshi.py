@@ -209,3 +209,16 @@ def test_list_markets_skips_malformed_market() -> None:
         "KXFEDDECISION-26OCT-H25",
         "KXFEDDECISION-26OCT-H0",
     ]
+
+
+def test_normalize_reads_historical_candle_price_close() -> None:
+    raw = {
+        "series": "KXFEDDECISION",
+        "ticker": "KXFEDDECISION-26JUL-H26",
+        "candle": {
+            "end_period_ts": 1782014400,
+            "price": {"close": "0.0100", "high": "0.0100"},
+        },
+    }
+    (obs,) = KalshiCollector().normalize(raw, FETCHED + timedelta(days=300))
+    assert obs.value == 0.01

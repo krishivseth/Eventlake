@@ -100,7 +100,9 @@ class KalshiCollector:
 
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
         candle = raw["candle"]
-        close = candle["price"].get("close_dollars")
+        price = candle["price"]
+        # Markets settled before the historical cutoff report ``close``, not ``close_dollars``.
+        close = price.get("close_dollars", price.get("close"))
         if close is None:
             return []  # nothing traded in this period
         probability = float(close)

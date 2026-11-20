@@ -197,3 +197,17 @@ def serve(port: Annotated[int, typer.Option(help="TCP port.")] = 8000) -> None:
     from eventlake.api import create_app
 
     uvicorn.run(create_app(_open_store()), host="127.0.0.1", port=port)
+
+
+@app.command()
+def demo(
+    offline: Annotated[
+        bool, typer.Option(help="Replay the recorded sample data; no network.")
+    ] = False,
+    now: Annotated[str | None, typer.Option(hidden=True)] = None,
+) -> None:
+    """Show the as-of event panel: known the day before each event, and known now."""
+    from eventlake.demo import default_now, render_demo
+
+    clock = parse_when(now) if now else (default_now() if offline else _now())
+    typer.echo(render_demo(offline, clock, format_table, render_health))
