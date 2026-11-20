@@ -6,12 +6,14 @@ access without a lock. This assumes one thread uses the store (one worker proces
 this app, no other thread touching the same ``Store``). Handlers are short, synchronous reads.
 """
 
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
+from eventlake.health import check_all
 from eventlake.panel import event_panel, stored_events
 from eventlake.store import Store
 from eventlake.types import utc
@@ -40,7 +42,7 @@ def _parse_as_of(raw: str | None) -> datetime:
         raise HTTPException(422, "as_of is out of range") from None
 
 
-def create_app(store: Store) -> FastAPI:
+def create_app(store: Store, clock: Callable[[], datetime] = lambda: datetime.now(UTC)) -> FastAPI:
     app = FastAPI(title="eventlake")
 
     @app.get("/health")
@@ -87,6 +89,6 @@ def create_app(store: Store) -> FastAPI:
 
     @app.get("/feeds")
     async def feeds() -> list[dict[str, Any]]:
-        return []
+        return [asdict(s) for s in check_all(store, clock())]
 
     return app

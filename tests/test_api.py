@@ -1,9 +1,11 @@
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
 from eventlake.api import create_app
+from eventlake.health import POLICIES
 from eventlake.panel import event_panel
+from eventlake.store import Store
 from panel_helpers import build_store, utc_at
 
 
@@ -14,7 +16,23 @@ def _client() -> TestClient:
 def test_health_and_feeds() -> None:
     client = _client()
     assert client.get("/health").json() == {"status": "ok"}
-    assert client.get("/feeds").json() == []
+
+
+def test_feeds_reports_health_per_feed() -> None:
+    now = datetime(2026, 3, 11, 12, tzinfo=UTC)
+    store = Store()
+    store.execute(
+        "INSERT INTO feed_runs (run_id, feed, started_at, finished_at, status, rows_fetched,"
+        " rows_written, rows_quarantined, error) VALUES ('r1','kalshi',?,?,'ok',5,5,0,NULL)",
+        [now - timedelta(hours=3), now - timedelta(hours=2)],
+    )
+    body = TestClient(create_app(store, clock=lambda: now)).get("/feeds").json()
+    by_feed = {f["feed"]: f for f in body}
+    assert set(by_feed) == set(POLICIES)
+    assert by_feed["kalshi"]["status"] == "ok"
+    assert by_feed["fred"]["status"] == "fail"
+    assert {c["name"] for c in by_feed["kalshi"]["checks"]} >= {"freshness", "gaps"}
+    assert set(by_feed["kalshi"]["checks"][0]) == {"name", "status", "detail"}
 
 
 def test_api_panel_matches_function() -> None:

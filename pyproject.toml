@@ -15,6 +15,9 @@ dependencies = [
     "pytz>=2026.6",
 ]
 
+[project.scripts]
+eventlake = "eventlake.cli:app"
+
 [dependency-groups]
 dev = [
     "pytest",
