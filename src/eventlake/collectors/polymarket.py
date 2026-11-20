@@ -83,7 +83,7 @@ class PolymarketCollector:
     ) -> None:
         self._tags = tuple(tag_slugs)
         self._page_size = page_size
-        self._http = http or HttpClient(limiter=RateLimiter(5, 1.0))
+        self._http = http if http is not None else HttpClient(limiter=RateLimiter(5, 1.0))
 
     def _iter_events(
         self, tag: str, *, closed: bool, end_min: datetime, end_max: datetime | None
@@ -113,7 +113,10 @@ class PolymarketCollector:
                 bound = closing_by if closed else None
                 for event in self._iter_events(tag, closed=closed, end_min=start, end_max=bound):
                     for raw in event.get("markets", []):
-                        found = _listing(event, raw)
+                        try:
+                            found = _listing(event, raw)
+                        except (KeyError, TypeError, ValueError):
+                            continue  # one malformed entry must not abort the listing
                         if found is None or found.market.market_id in seen:
                             continue
                         if found.market.close_time < start:
@@ -148,6 +151,8 @@ class PolymarketCollector:
         if not 0.0 <= probability <= 1.0:
             raise ValidationError(f"{raw['token_id']}: probability {probability} outside [0, 1]")
         at = datetime.fromtimestamp(int(point["t"]), UTC)
+        if at > utc(fetched_at):
+            return []  # the period has not ended, so there is no observation yet
         return [
             Observation(
                 feed=FEED,

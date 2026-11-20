@@ -41,7 +41,9 @@ class KalshiCollector:
         self, series: Sequence[str] = KALSHI_SERIES, http: HttpClient | None = None
     ) -> None:
         self._series = tuple(series)
-        self._http = http or HttpClient(BASE_URL, limiter=RateLimiter(10, 1.0))
+        self._http = (
+            http if http is not None else HttpClient(BASE_URL, limiter=RateLimiter(10, 1.0))
+        )
 
     def _iter_markets(self, series: str, min_close: datetime) -> Iterator[dict[str, Any]]:
         """Every market of ``series`` closing at or after ``min_close``, following the cursor."""
@@ -66,7 +68,10 @@ class KalshiCollector:
         out: list[Market] = []
         for series in self._series:
             for raw in self._iter_markets(series, start):
-                market = _market(raw, series)
+                try:
+                    market = _market(raw, series)
+                except (KeyError, TypeError, ValueError):
+                    continue  # one malformed entry must not abort the listing
                 if market.close_time < start:
                     continue
                 if market.close_time <= end or raw.get("status") in ("active", "open"):
@@ -102,6 +107,8 @@ class KalshiCollector:
         if not 0.0 <= probability <= 1.0:
             raise ValidationError(f"{raw['ticker']}: probability {probability} outside [0, 1]")
         at = datetime.fromtimestamp(int(candle["end_period_ts"]), UTC)
+        if at > utc(fetched_at):
+            return []  # the period has not ended, so there is no observation yet
         return [
             Observation(
                 feed=FEED,

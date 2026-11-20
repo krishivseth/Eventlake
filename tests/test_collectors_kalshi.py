@@ -1,8 +1,9 @@
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import responses
@@ -139,3 +140,72 @@ def test_run_collector_end_to_end() -> None:
 def test_registered_and_series_cover_three_event_families() -> None:
     assert isinstance(REGISTRY["kalshi"](), KalshiCollector)
     assert set(KALSHI_SERIES) == {"KXFEDDECISION", "KXCPI", "KXHIGHNY"}
+
+
+CANDLES = re.compile(
+    r"https://api\.elections\.kalshi\.com/trade-api/v2/series/KXFEDDECISION/markets/[^/]+/candlesticks"
+)
+
+
+def _fed_page_with_open_time(ticker: str, open_time: str) -> dict[str, Any]:
+    page = _load("markets_kxfeddecision.json")
+    for m in page["markets"]:
+        if m["ticker"] == ticker:
+            m["open_time"] = open_time
+    return page
+
+
+@responses.activate
+def test_fetch_skips_market_opened_after_end() -> None:
+    late = "KXFEDDECISION-26OCT-H25"
+    page = _fed_page_with_open_time(late, "2026-12-01T00:00:00Z")
+    responses.add(responses.GET, f"{BASE}/markets", json=page)
+    responses.add(responses.GET, CANDLES, json=_load("candlesticks_h0.json"))
+    records = list(KalshiCollector(series=["KXFEDDECISION"]).fetch(START, END))
+    paths = [
+        urlsplit(c.request.url).path for c in responses.calls if "candlesticks" in c.request.url
+    ]
+    assert len(paths) == 2
+    assert not any(late in p for p in paths)
+    assert len(records) == 2 * 4
+
+
+@responses.activate
+def test_fetch_sends_window_and_daily_interval() -> None:
+    responses.add(responses.GET, f"{BASE}/markets", json=_load("markets_kxfeddecision.json"))
+    responses.add(responses.GET, CANDLES, json=_load("candlesticks_h0.json"))
+    list(KalshiCollector(series=["KXFEDDECISION"]).fetch(START, END))
+    candle_calls = [c for c in responses.calls if "candlesticks" in c.request.url]
+    query = parse_qs(urlsplit(candle_calls[0].request.url).query)
+    assert query == {
+        "start_ts": [str(int(START.timestamp()))],
+        "end_ts": [str(int(END.timestamp()))],
+        "period_interval": ["1440"],
+    }
+    markets_query = parse_qs(urlsplit(responses.calls[0].request.url).query)
+    assert markets_query["series_ticker"] == ["KXFEDDECISION"]
+    assert markets_query["min_close_ts"] == [str(int(START.timestamp()))]
+
+
+def test_normalize_skips_candle_that_has_not_ended() -> None:
+    candles = _load("candlesticks_h0.json")
+    raw = {
+        "series": "KXFEDDECISION",
+        "ticker": candles["ticker"],
+        "candle": candles["candlesticks"][0],
+    }
+    ends = datetime.fromtimestamp(candles["candlesticks"][0]["end_period_ts"], UTC)
+    assert KalshiCollector().normalize(raw, ends - timedelta(seconds=1)) == []
+    assert len(KalshiCollector().normalize(raw, ends)) == 1
+
+
+@responses.activate
+def test_list_markets_skips_malformed_market() -> None:
+    page = _load("markets_kxfeddecision.json")
+    del page["markets"][0]["close_time"]
+    responses.add(responses.GET, f"{BASE}/markets", json=page)
+    markets = KalshiCollector(series=["KXFEDDECISION"]).list_markets(START, END)
+    assert [m.venue_ticker for m in markets] == [
+        "KXFEDDECISION-26OCT-H25",
+        "KXFEDDECISION-26OCT-H0",
+    ]

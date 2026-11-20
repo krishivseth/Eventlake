@@ -128,8 +128,10 @@ def test_weather_market_in_standard_and_daylight_time_maps_to_its_day() -> None:
     upsert_markets(
         store,
         [
-            _market("S", datetime(2026, 1, 16, 5, 0, tzinfo=UTC), "KXHIGHNY"),  # Jan 15, EST
-            _market("D", datetime(2026, 7, 16, 4, 0, tzinfo=UTC), "KXHIGHNY"),
+            _market(
+                "KXHIGHNY-26JAN15-T40", datetime(2026, 1, 16, 5, 0, tzinfo=UTC), "KXHIGHNY"
+            ),  # Jan 15, EST
+            _market("KXHIGHNY-26JUL15-T80", datetime(2026, 7, 16, 4, 0, tzinfo=UTC), "KXHIGHNY"),
         ],  # Jul 15, EDT
     )
     link_markets(store, now=NOW)
@@ -151,3 +153,36 @@ def test_polymarket_fed_decision_family_links() -> None:
 def test_every_rule_has_positive_tolerance_and_known_kind() -> None:
     assert {r.kind for r in LINK_RULES} == {"FOMC", "CPI", "WEATHER_HIGH"}
     assert all(r.tolerance > timedelta(0) for r in LINK_RULES)
+
+
+def test_weather_market_whose_ticker_day_disagrees_is_unlinked() -> None:
+    store = Store()
+    close = datetime(2026, 11, 21, 6, 0, tzinfo=UTC)  # settles Nov 20, but the ticker says Nov 19
+    upsert_markets(store, [_market("KXHIGHNY-26NOV19-T69", close, "KXHIGHNY")])
+    assert link_markets(store, now=NOW) == 0
+    assert len(unlinked_markets(store)) == 1
+    assert store.execute("SELECT count(*) FROM events")[0][0] == 0
+
+
+def test_weather_market_with_unparseable_ticker_is_unlinked() -> None:
+    store = Store()
+    close = datetime(2026, 11, 21, 6, 0, tzinfo=UTC)
+    upsert_markets(
+        store,
+        [
+            _market("KXHIGHNY-T69", close, "KXHIGHNY"),
+            _market("KXHIGHNY-26NOV31-T69", close, "KXHIGHNY"),  # not a real date
+        ],
+    )
+    assert link_markets(store, now=NOW) == 0
+    assert len(unlinked_markets(store)) == 2
+
+
+def test_cpi_market_links_to_cpi_event() -> None:
+    store = _store_with_events()
+    close = datetime(2026, 11, 10, 13, 29, tzinfo=UTC)
+    upsert_markets(store, [_market("KXCPI-26OCT-T1.0", close, "KXCPI")])
+    assert link_markets(store, now=NOW) == 1
+    assert [m.venue_ticker for m in markets_for_event(store, "CPI:2026-11-10")] == [
+        "KXCPI-26OCT-T1.0"
+    ]

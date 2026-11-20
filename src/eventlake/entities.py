@@ -1,6 +1,7 @@
 """Prediction-market entities stored alongside events."""
 
 import json
+import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -80,7 +81,7 @@ def _row_to_market(row: tuple[Any, ...]) -> Market:
         venue_ticker=venue_ticker,
         series_ticker=series_ticker,
         title=title,
-        close_time=close_time,
+        close_time=utc(close_time),
         attrs=json.loads(attrs) if attrs else {},
     )
 
@@ -117,14 +118,30 @@ def _weather_day(close_time: datetime) -> date:
     return (utc(close_time) - timedelta(hours=12)).astimezone(_NY).date()
 
 
+_TICKER_DAY = re.compile(r"-(\d{2})([A-Z]{3})(\d{2})(?:-|$)")
+
+
+def _ticker_day(ticker: str) -> date | None:
+    """The settlement day encoded in a ticker such as ``KXHIGHNY-26NOV20-T69``, if any."""
+    found = _TICKER_DAY.search(ticker)
+    if found is None:
+        return None
+    try:
+        return datetime.strptime("".join(found.groups()), "%y%b%d").date()
+    except ValueError:
+        return None
+
+
 def _candidate_events(store: Store, rule: LinkRule, market: Market) -> list[Event]:
     if rule.kind == "WEATHER_HIGH":
-        event = weather_event(WEATHER_STATION, _weather_day(market.close_time))
-        return [event]
+        day = _weather_day(market.close_time)
+        if _ticker_day(market.venue_ticker) != day:
+            return []  # the ticker's own date must agree with the close time
+        return [weather_event(WEATHER_STATION, day)]
     rows = store.execute(
         "SELECT event_id, kind, scheduled_time FROM events WHERE kind = ?", [rule.kind]
     )
-    return [Event(r[0], cast(EventKind, r[1]), r[2], {}) for r in rows]
+    return [Event(r[0], cast(EventKind, r[1]), utc(r[2]), {}) for r in rows]
 
 
 def _closest_event(rule: LinkRule, market: Market, events: list[Event]) -> Event | None:

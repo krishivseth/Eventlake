@@ -1,8 +1,9 @@
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import responses
@@ -41,6 +42,7 @@ def test_list_markets_parses_fixture() -> None:
     _register_events()
     markets = PolymarketCollector(tag_slugs=["fed"]).list_markets(START, END)
     assert len(markets) == 7
+    assert all("tag_slug=fed" in c.request.url for c in responses.calls)
     first = markets[0]
     assert first.venue == "polymarket"
     assert first.series_ticker == "fed-decision"
@@ -58,7 +60,7 @@ def test_pagination_follows_offset() -> None:
     def cb(request: Any) -> tuple[int, dict[str, str], str]:
         if request.params["closed"] == "false":
             return 200, {}, "[]"
-        return 200, {}, json.dumps(pages[int(request.params["offset"]) // 1])
+        return 200, {}, json.dumps(pages[int(request.params["offset"])])
 
     responses.add_callback(responses.GET, GAMMA, callback=cb, content_type="application/json")
     collector = PolymarketCollector(tag_slugs=["fed"], page_size=1)
@@ -68,7 +70,6 @@ def test_pagination_follows_offset() -> None:
     assert len(closed_calls) == 3  # two full pages, then the empty page that ends the walk
 
 
-@responses.activate
 def test_normalize_scales_to_unit_probability() -> None:
     raw = {"token_id": "tok1", "point": {"t": 1781827225, "p": 0.055}}
     (obs,) = PolymarketCollector().normalize(raw, FETCHED)
@@ -103,18 +104,61 @@ def test_run_collector_end_to_end() -> None:
     assert snap.series("polymarket", yes_token)[0].value == 0.055
 
 
-@responses.activate
-def test_fetch_windows_points_and_skips_markets_outside_life() -> None:
-    _register_events()
+def _register_history() -> list[str]:
     history = json.loads((FIX / "prices_history.json").read_text())
     responses.add(responses.GET, re.compile(re.escape(CLOB)), json=history)
-    # A window before any of these markets opened yields no price requests.
-    before = list(
-        PolymarketCollector(tag_slugs=["fed"]).fetch(
-            datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 2, 1, tzinfo=UTC)
-        )
+    return [p["t"] for p in history["history"]]
+
+
+def _requested_tokens() -> list[str]:
+    return [
+        parse_qs(urlsplit(c.request.url).query)["market"][0]
+        for c in responses.calls
+        if c.request.url.startswith(CLOB)
+    ]
+
+
+@responses.activate
+def test_fetch_drops_points_outside_window() -> None:
+    _register_events()
+    t = _register_history()
+    window = (datetime.fromtimestamp(t[1], UTC), datetime.fromtimestamp(t[3], UTC))
+    records = list(PolymarketCollector(tag_slugs=["fed"]).fetch(*window))
+    assert len(records) == 5 * 3  # the five decision markets; dissent markets opened later
+    assert {r["point"]["t"] for r in records} == {t[1], t[2], t[3]}  # bounds are inclusive
+
+
+@responses.activate
+def test_fetch_skips_market_opened_after_end() -> None:
+    _register_events()
+    _register_history()
+    # The decision markets opened in mid-June; the dissent markets opened on 2026-09-08.
+    records = list(
+        PolymarketCollector(tag_slugs=["fed"]).fetch(LIFE_START, datetime(2026, 7, 1, tzinfo=UTC))
     )
-    assert before == []
+    decision_tokens = {json.loads(m["clobTokenIds"])[0] for m in _events()[0]["markets"]}
+    assert set(_requested_tokens()) == decision_tokens
+    assert {r["token_id"] for r in records} == decision_tokens
+
+
+def test_normalize_skips_point_that_has_not_happened_yet() -> None:
+    raw = {"token_id": "tok1", "point": {"t": 1781827225, "p": 0.055}}
+    before = datetime.fromtimestamp(1781827225, UTC) - timedelta(seconds=1)
+    assert PolymarketCollector().normalize(raw, before) == []
+
+
+@responses.activate
+def test_list_markets_skips_malformed_market() -> None:
+    events = _events()
+    del events[0]["markets"][0]["question"]
+    responses.add_callback(
+        responses.GET,
+        GAMMA,
+        callback=lambda r: (200, {}, json.dumps(events if r.params["closed"] == "true" else [])),
+        content_type="application/json",
+    )
+    markets = PolymarketCollector(tag_slugs=["fed"]).list_markets(START, END)
+    assert len(markets) == 6
 
 
 def test_registered_and_default_tags() -> None:
