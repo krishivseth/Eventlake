@@ -61,16 +61,16 @@ A realised move exists only once the close is known; an implied move is only def
 Each row in table 1 was recomputed from a store holding only data known at its as-of time, and matched.
 
 Feed health (runs are stamped with the demo clock)
-feed             status  freshness  last_run  volume  quarantine  gaps
----------------  ------  ---------  --------  ------  ----------  ----
-fred             OK      ok         ok        ok      ok          ok
-kalshi           OK      ok         ok        ok      ok          ok
-noaa             WARN    ok         ok        ok      ok          warn
-polymarket       OK      ok         ok        ok      ok          ok
-tradier.options  OK      ok         ok        ok      ok          ok
+feed             status  freshness  last_run  volume  empty_runs  quarantine  gaps
+---------------  ------  ---------  --------  ------  ----------  ----------  ----
+fred             OK      ok         ok        ok      ok          ok          ok
+kalshi           OK      ok         ok        ok      ok          ok          ok
+noaa             WARN    ok         ok        ok      ok          ok          warn
+polymarket       OK      ok         ok        ok      ok          ok          ok
+tradier.options  OK      ok         ok        ok      ok          ok          ok
 
 Issues:
-  noaa gaps [warn]: missing USW00094728:TMAX: 2026-11-16, 2026-11-17 (weekdays 2026-10-19 to 2026-11-17; no holiday calendar, so market holidays show as gaps)
+  noaa gaps [warn]: missing USW00094728:TMAX: 2026-11-16, 2026-11-17 (weekdays 2026-10-19 to 2026-11-17)
 
 tradier.options is the synthetic sample; cftc and edgar are not part of the demo.
 A noaa gap warning is genuine: the recorded summaries trail the demo clock.
@@ -170,12 +170,13 @@ updated or deleted. Two guarantees are enforced by tests:
 Configuration is by environment variable (see `.env.example`): `EVENTLAKE_DB` (default
 `data/eventlake.duckdb`), `TRADIER_TOKEN` and `TRADIER_BASE` (default the Tradier sandbox),
 `EVENTLAKE_CONTACT` (required by the EDGAR feed), `EVENTLAKE_ALERT_WEBHOOK`. `backfill` skips
-a collector whose setting is missing and says so.
+a collector whose setting is missing and says so. `health` checks only feeds that have run at
+least once and lists the rest as not configured; three empty runs in a row fail a feed.
 
 ```
 uv run eventlake backfill --start 2025-01-01       # calendar, markets, every collector, links
 uv run eventlake ingest kalshi --start 2026-11-01  # one feed over a window
-uv run eventlake health --alert                    # exit 1, and post to the webhook, if a feed fails
+uv run eventlake health --alert                    # exit 1 and post to the webhook if a feed fails
 uv run eventlake export panel.parquet              # day-before-event panel as Parquet
 uv run eventlake serve --port 8000                 # read-only API: /events /observations /panel /feeds
 ```

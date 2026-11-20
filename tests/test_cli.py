@@ -91,25 +91,39 @@ def test_backfill_skips_unconfigured_feeds_and_runs_the_rest(
     store.close()
 
 
-def seed_runs(db: Path, *, skip: str | None = None) -> None:
+def seed_runs(db: Path, *, skip: tuple[str, ...] = (), failed: str | None = None) -> None:
     store = Store(db)
     for feed in POLICIES:
-        if feed == skip:
+        if feed in skip:
             continue
         store.execute(
             "INSERT INTO feed_runs (run_id, feed, started_at, finished_at, status, rows_fetched,"
-            " rows_written, rows_quarantined, error) VALUES (?,?,?,?,'ok',5,5,0,NULL)",
-            [f"r-{feed}", feed, NOW - timedelta(hours=2), NOW - timedelta(hours=1)],
+            " rows_written, rows_quarantined, error) VALUES (?,?,?,?,?,5,5,0,NULL)",
+            [
+                f"r-{feed}",
+                feed,
+                NOW - timedelta(hours=2),
+                NOW - timedelta(hours=1),
+                "failed" if feed == failed else "ok",
+            ],
         )
     store.close()
 
 
 def test_cli_health_exit_code(db: Path) -> None:
-    seed_runs(db, skip="edgar")
+    seed_runs(db, failed="edgar")
     failing = runner.invoke(cli.app, ["health"])
     assert failing.exit_code == 1
     assert "edgar" in failing.output and "FAIL" in failing.output
     assert "never completed" in failing.output
+
+
+def test_cli_health_lists_unconfigured_feeds_without_failing(db: Path) -> None:
+    seed_runs(db, skip=("edgar", "tradier.options"))
+    result = runner.invoke(cli.app, ["health"])
+    assert result.exit_code == 0, result.output
+    assert "Not configured (never run): edgar, tradier.options" in result.output
+    assert not any(line.startswith("edgar ") for line in result.output.splitlines())
 
 
 def test_cli_health_zero_when_only_warnings(db: Path) -> None:
@@ -128,7 +142,7 @@ def test_cli_health_alert_uses_webhook(db: Path, monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(cli, "send_alert", fake_alert)
     monkeypatch.setenv("EVENTLAKE_ALERT_WEBHOOK", "https://hook.test/x")
-    seed_runs(db, skip="cftc")
+    seed_runs(db, skip=("edgar",), failed="cftc")
     result = runner.invoke(cli.app, ["health", "--alert"])
     assert result.exit_code == 1
     assert sent == [("https://hook.test/x", ["cftc"])]

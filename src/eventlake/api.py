@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
-from eventlake.health import check_all
+from eventlake.health import check_all, unconfigured_feeds
 from eventlake.panel import event_panel, stored_events
 from eventlake.store import Store
 from eventlake.types import utc
@@ -89,6 +89,11 @@ def create_app(store: Store, clock: Callable[[], datetime] = lambda: datetime.no
 
     @app.get("/feeds")
     async def feeds() -> list[dict[str, Any]]:
-        return [asdict(s) for s in check_all(store, clock())]
+        """Health of every feed that has run; feeds never run are ``not_configured``."""
+        found = [asdict(s) for s in check_all(store, clock())]
+        found += [
+            {"feed": f, "status": "not_configured", "checks": []} for f in unconfigured_feeds(store)
+        ]
+        return sorted(found, key=lambda f: str(f["feed"]))
 
     return app

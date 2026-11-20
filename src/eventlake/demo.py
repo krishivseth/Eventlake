@@ -19,7 +19,7 @@ from eventlake.collectors import REGISTRY
 from eventlake.collectors.kalshi import KalshiCollector
 from eventlake.collectors.polymarket import GAMMA_EVENTS, PolymarketCollector
 from eventlake.entities import Market, link_markets, upsert_markets
-from eventlake.health import POLICIES, FeedStatus, check_feed
+from eventlake.health import check_all
 from eventlake.panel import PanelRow, eve_panel
 from eventlake.runner import Collector, run_collector
 from eventlake.store import Store
@@ -286,11 +286,6 @@ def eve_view_mismatches(offline: bool, now: datetime, eve: Sequence[PanelRow]) -
     return problems
 
 
-def demo_health(store: Store, now: datetime, offline: bool) -> list[FeedStatus]:
-    feeds = ["fred", "kalshi", "noaa", "polymarket"] + ([_OPTIONS_FEED] if offline else [])
-    return [check_feed(store, POLICIES[f], now) for f in sorted(feeds)]
-
-
 def render_demo(offline: bool, now: datetime) -> tuple[str, bool]:
     """The demo text and whether every self-check passed."""
     store, events = build_store(offline, now)
@@ -299,7 +294,7 @@ def render_demo(offline: bool, now: datetime) -> tuple[str, bool]:
         eve = eve_panel(store, until=shown_until)
         later = eve_panel(store, lead=-_AFTER, until=shown_until)
         too_recent = [e.event_id for e in events if e.scheduled_time > shown_until]
-        statuses = demo_health(store, now, offline)
+        statuses = check_all(store, now)  # only the feeds the demo ran
     finally:
         store.close()
     problems = eve_view_mismatches(offline, now, eve)

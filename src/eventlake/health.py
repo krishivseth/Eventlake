@@ -17,15 +17,27 @@ _GAP_WINDOW_DAYS = 30
 _GAP_PUBLISH_LAG_DAYS = 2  # the newest days are the freshness check's business, not a gap
 _PRIOR_RUNS = 10
 _MIN_PRIOR_RUNS = 3
+_EMPTY_RUNS = 3
 
 
 @dataclass(frozen=True)
 class FeedPolicy:
+    """Health limits for one feed.
+
+    ``max_quarantine_ratio`` bounds ``rows_quarantined / rows_fetched`` of the last run. Both
+    count records: ``rows_fetched`` the raw records ``fetch`` yielded, ``rows_quarantined`` the
+    raw records ``normalize`` rejected plus the observations the store rejected. The two units
+    agree for every feed whose record yields one observation; for one that yields several (CFTC
+    yields four) a store rejection weighs more than a fetched record. ``market_days`` marks
+    ``daily_series`` that skip exchange holidays, which the gap check cannot tell from gaps.
+    """
+
     feed: str
     max_staleness: timedelta
     min_rows_ratio: float = 0.5
     max_quarantine_ratio: float = 0.05
     daily_series: tuple[str, ...] = ()
+    market_days: bool = False
 
 
 @dataclass(frozen=True)
@@ -48,7 +60,7 @@ POLICIES: dict[str, FeedPolicy] = {
         FeedPolicy("kalshi", timedelta(hours=36)),
         FeedPolicy("polymarket", timedelta(hours=36)),
         FeedPolicy("tradier.options", timedelta(hours=36)),
-        FeedPolicy("fred", timedelta(days=4), daily_series=("SP500",)),
+        FeedPolicy("fred", timedelta(days=4), daily_series=("SP500",), market_days=True),
         FeedPolicy("noaa", timedelta(days=4), daily_series=("USW00094728:TMAX",)),
         FeedPolicy("cftc", timedelta(days=9)),
         FeedPolicy("edgar", timedelta(days=4)),
@@ -112,12 +124,23 @@ def _volume(good: list[_Run], policy: FeedPolicy) -> Check:
     return Check("volume", "ok", detail)
 
 
+def _empty_runs(good: list[_Run]) -> Check:
+    last = good[:_EMPTY_RUNS]
+    if len(last) < _EMPTY_RUNS:
+        return Check("empty_runs", "ok", f"skipped: fewer than {_EMPTY_RUNS} completed runs")
+    if all(r.rows_fetched == 0 for r in last):
+        return Check("empty_runs", "fail", f"the last {_EMPTY_RUNS} completed runs fetched 0 rows")
+    return Check("empty_runs", "ok", f"one of the last {_EMPTY_RUNS} completed runs fetched rows")
+
+
 def _quarantine(runs: list[_Run], policy: FeedPolicy) -> Check:
     if not runs or runs[0].rows_fetched == 0:
         return Check("quarantine", "ok", "no rows in the last run")
     last = runs[0]
     ratio = last.rows_quarantined / last.rows_fetched
-    detail = f"{last.rows_quarantined} of {last.rows_fetched} rows quarantined ({ratio:.1%})"
+    detail = (
+        f"{last.rows_quarantined} quarantined of {last.rows_fetched} records fetched ({ratio:.1%})"
+    )
     status: Level = "fail" if ratio > policy.max_quarantine_ratio else "ok"
     return Check("quarantine", status, detail)
 
@@ -135,10 +158,9 @@ def _gaps(store: Store, policy: FeedPolicy, now: datetime) -> Check:
         absent = sorted(d for d in weekdays if d not in have)
         if absent:
             missing.append(f"{series_id}: " + ", ".join(d.isoformat() for d in absent))
-    note = (
-        f"weekdays {min(days).isoformat()} to {max(days).isoformat()}; "
-        "no holiday calendar, so market holidays show as gaps"
-    )
+    note = f"weekdays {min(days).isoformat()} to {max(days).isoformat()}"
+    if policy.market_days:
+        note += "; no holiday calendar, so market holidays show as gaps"
     if missing:
         return Check("gaps", "warn", "missing " + "; ".join(missing) + f" ({note})")
     return Check("gaps", "ok", f"no missing weekdays ({note})")
@@ -153,6 +175,7 @@ def check_feed(store: Store, policy: FeedPolicy, now: datetime) -> FeedStatus:
         _freshness(good, policy, now),
         _last_run(runs),
         _volume(good, policy),
+        _empty_runs(good),
         _quarantine(runs, policy),
         _gaps(store, policy, now) if good else Check("gaps", "ok", "no runs recorded"),
     )
@@ -160,9 +183,20 @@ def check_feed(store: Store, policy: FeedPolicy, now: datetime) -> FeedStatus:
     return FeedStatus(policy.feed, worst, found)
 
 
+def _feeds_with_runs(store: Store) -> set[str]:
+    return {r[0] for r in store.execute("SELECT DISTINCT feed FROM feed_runs")}
+
+
 def check_all(store: Store, now: datetime) -> list[FeedStatus]:
-    """One status per policy, sorted by feed name."""
-    return [check_feed(store, POLICIES[feed], now) for feed in sorted(POLICIES)]
+    """One status per policy whose feed has at least one run recorded, sorted by feed name."""
+    ran = _feeds_with_runs(store)
+    return [check_feed(store, POLICIES[feed], now) for feed in sorted(POLICIES) if feed in ran]
+
+
+def unconfigured_feeds(store: Store) -> list[str]:
+    """Feeds with a policy but no run recorded, sorted; ``check_all`` leaves them out."""
+    ran = _feeds_with_runs(store)
+    return [feed for feed in sorted(POLICIES) if feed not in ran]
 
 
 def send_alert(

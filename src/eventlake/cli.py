@@ -10,7 +10,7 @@ import typer
 from eventlake.calendar import load_events, upsert_events
 from eventlake.collectors import REGISTRY
 from eventlake.entities import link_markets, upsert_markets
-from eventlake.health import check_all, send_alert
+from eventlake.health import check_all, send_alert, unconfigured_feeds
 from eventlake.panel import eve_panel, export_parquet
 from eventlake.runner import Collector, RunResult, run_collector
 from eventlake.store import Store
@@ -128,13 +128,16 @@ def health(
     ] = False,
     now: Annotated[str | None, typer.Option(hidden=True)] = None,
 ) -> None:
-    """Print feed health; exit 1 if any feed fails."""
+    """Print feed health; exit 1 if any feed that has run fails."""
     store = _open_store()
     try:
         statuses = check_all(store, parse_when(now) if now else _now())
+        never_run = unconfigured_feeds(store)
     finally:
         store.close()
     typer.echo(render_health(statuses))
+    if never_run:
+        typer.echo(f"Not configured (never run): {', '.join(never_run)}")
     failing = any(s.status == "fail" for s in statuses)
     if alert and failing:
         url = os.environ.get("EVENTLAKE_ALERT_WEBHOOK")

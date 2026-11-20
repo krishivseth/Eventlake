@@ -30,7 +30,8 @@ def test_feeds_reports_health_per_feed() -> None:
     by_feed = {f["feed"]: f for f in body}
     assert set(by_feed) == set(POLICIES)
     assert by_feed["kalshi"]["status"] == "ok"
-    assert by_feed["fred"]["status"] == "fail"
+    assert by_feed["fred"] == {"feed": "fred", "status": "not_configured", "checks": []}
+    assert [f["feed"] for f in body] == sorted(POLICIES)
     assert {c["name"] for c in by_feed["kalshi"]["checks"]} >= {"freshness", "gaps"}
     assert set(by_feed["kalshi"]["checks"][0]) == {"name", "status", "detail"}
 

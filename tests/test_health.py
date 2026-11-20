@@ -12,6 +12,7 @@ from eventlake.health import (
     check_all,
     check_feed,
     send_alert,
+    unconfigured_feeds,
 )
 from eventlake.store import Store
 from eventlake.types import Observation
@@ -50,7 +51,14 @@ def test_fresh_feed_is_ok() -> None:
     add_run(store, timedelta(hours=2))
     status = check_feed(store, POLICY, NOW)
     assert status.status == "ok"
-    assert set(checks(status)) == {"freshness", "last_run", "volume", "quarantine", "gaps"}
+    assert set(checks(status)) == {
+        "freshness",
+        "last_run",
+        "volume",
+        "empty_runs",
+        "quarantine",
+        "gaps",
+    }
 
 
 def test_stale_feed_fails() -> None:
@@ -106,7 +114,7 @@ def test_quarantine_ratio_fails() -> None:
 def test_gap_detection_lists_missing_weekdays() -> None:
     store = Store()
     add_run(store, timedelta(hours=1))
-    policy = replace(POLICY, daily_series=("S",))
+    policy = replace(POLICY, daily_series=("S",), market_days=True)
     obs: list[Observation] = []
     for i in range(1, 40):
         day = datetime(2026, 3, 11, tzinfo=UTC) - timedelta(days=i)
@@ -142,10 +150,55 @@ def test_policies_cover_every_registered_feed() -> None:
     assert hours["edgar"] == timedelta(days=4)
 
 
-def test_check_all_returns_one_status_per_policy() -> None:
-    statuses = check_all(Store(), NOW)
-    assert [s.feed for s in statuses] == sorted(POLICIES)
-    assert all(s.status == "fail" for s in statuses)
+def test_check_all_skips_feeds_that_never_ran() -> None:
+    store = Store()
+    assert check_all(store, NOW) == []
+    assert unconfigured_feeds(store) == sorted(POLICIES)
+    add_run(store, timedelta(hours=1), feed="kalshi")
+    add_run(store, timedelta(hours=1), feed="cftc", status="failed", error="boom")
+    assert [s.feed for s in check_all(store, NOW)] == ["cftc", "kalshi"]
+    assert unconfigured_feeds(store) == sorted(set(POLICIES) - {"cftc", "kalshi"})
+
+
+def test_three_empty_runs_in_a_row_fail() -> None:
+    store = Store()
+    add_run(store, timedelta(hours=4), fetched=50)
+    for h in (3, 2, 1):
+        add_run(store, timedelta(hours=h), fetched=0)
+    empty = checks(check_feed(store, POLICY, NOW))["empty_runs"]
+    assert empty.status == "fail" and "3" in empty.detail
+
+
+def test_empty_runs_ok_with_fewer_than_three_or_one_non_empty() -> None:
+    store = Store()
+    add_run(store, timedelta(hours=3), fetched=0)
+    add_run(store, timedelta(hours=2), fetched=0)
+    assert checks(check_feed(store, POLICY, NOW))["empty_runs"].status == "ok"
+    add_run(store, timedelta(hours=1, minutes=30), status="failed", fetched=0, error="x")
+    assert checks(check_feed(store, POLICY, NOW))["empty_runs"].status == "ok"
+    add_run(store, timedelta(hours=1), fetched=7)
+    add_run(store, timedelta(minutes=30), fetched=0)
+    assert checks(check_feed(store, POLICY, NOW))["empty_runs"].status == "ok"
+
+
+def _gap_note(policy: FeedPolicy) -> str:
+    store = Store()
+    add_run(store, timedelta(hours=1), feed=policy.feed)
+    detail: str = checks(check_feed(store, policy, NOW))["gaps"].detail
+    return detail
+
+
+def test_holiday_note_only_for_market_day_series() -> None:
+    assert "market holidays" in _gap_note(POLICIES["fred"])
+    assert "market holidays" not in _gap_note(POLICIES["noaa"])
+    assert "weekdays" in _gap_note(POLICIES["noaa"])
+
+
+def test_quarantine_detail_states_its_units() -> None:
+    store = Store()
+    add_run(store, timedelta(hours=1), fetched=100, quarantined=2, status="partial")
+    detail = checks(check_feed(store, POLICY, NOW))["quarantine"].detail
+    assert detail == "2 quarantined of 100 records fetched (2.0%)"
 
 
 class FakePost:
