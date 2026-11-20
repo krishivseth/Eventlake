@@ -4,11 +4,12 @@ from pathlib import Path
 import pytest
 import responses
 
+from eventlake.calendar import load_events
 from eventlake.collectors import REGISTRY
-from eventlake.collectors.fred import FRED_SERIES, FredCollector
+from eventlake.collectors.fred import FRED_SERIES, DailyLag, FredCollector
 from eventlake.runner import run_collector
 from eventlake.store import Store
-from eventlake.types import ValidationError
+from eventlake.types import Observation, ValidationError
 
 FIX = Path(__file__).parent / "fixtures" / "fred"
 URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
@@ -46,21 +47,70 @@ def test_normalize_fixture_values() -> None:
 @responses.activate
 def test_fetch_filters_rows_to_window() -> None:
     _register("SP500")
-    records = list(FredCollector(series={"SP500": timedelta(0)}).fetch(START, END))
+    records = list(FredCollector(series={"SP500": DailyLag(timedelta(0))}).fetch(START, END))
     dates = [r["date"] for r in records]
     assert dates[0] == "2026-01-26"
     assert dates[-1] == "2026-02-20"
     assert len(dates) == 20
 
 
-def test_cpi_lag_is_added_after_one_day() -> None:
-    c = FredCollector()
-    (obs,) = c.normalize(
-        {"series": "CPIAUCSL", "date": "2026-01-01", "value": "326.588"},
-        datetime(2026, 3, 1, tzinfo=UTC),
+def _release(event_id: str) -> datetime:
+    (event,) = [e for e in load_events(["CPI"]) if e.event_id == event_id]
+    return event.scheduled_time
+
+
+def _cpi(day: str, fetched: datetime = FETCHED) -> list[Observation]:
+    return FredCollector().normalize(
+        {"series": "CPIAUCSL", "date": day, "value": "326.588"}, fetched
     )
-    assert obs.knowledge_time == datetime(2026, 1, 16, tzinfo=UTC)
+
+
+def test_cpi_known_at_the_release_after_its_reference_month() -> None:
+    (obs,) = _cpi("2026-01-01")
+    release = _release("CPI:2026-02-13")
+    assert release == datetime(2026, 2, 13, 13, 30, tzinfo=UTC)
+    assert (obs.event_time, obs.knowledge_time) == (datetime(2026, 1, 1, tzinfo=UTC), release)
+    assert obs.kt_quality == "source"
+    assert obs.attrs == {"event_id": "CPI:2026-02-13"}
     assert obs.value == 326.588
+    store = Store()
+    store.append([obs])
+    assert store.as_of(release - timedelta(days=1)).series("fred", "CPIAUCSL") == []
+    assert store.as_of(release).series("fred", "CPIAUCSL") == [obs]
+
+
+def test_cpi_before_its_release_is_not_yet_knowable() -> None:
+    assert _cpi("2026-01-01", datetime(2026, 2, 13, 13, tzinfo=UTC)) == []
+
+
+def test_cpi_cancelled_or_delayed_release_maps_to_the_next_existing_one() -> None:
+    # September 2025 was published late, on 2025-10-24; October 2025 had no release of its own,
+    # so the first release after that month ends is the one on 2025-12-18.
+    (september,) = _cpi("2025-09-01")
+    (october,) = _cpi("2025-10-01")
+    assert september.knowledge_time == _release("CPI:2025-10-24")
+    assert october.knowledge_time == _release("CPI:2025-12-18")
+    assert october.attrs == {"event_id": "CPI:2025-12-18"}
+
+
+def test_cpi_outside_the_calendar_uses_the_assumed_fallback() -> None:
+    (obs,) = _cpi("2024-06-01")
+    assert obs.knowledge_time == datetime(2024, 7, 1, tzinfo=UTC) + timedelta(days=45)
+    assert obs.kt_quality == "assumed"
+    assert obs.attrs == {}
+    (first,) = _cpi("2024-12-01")  # published by the calendar's first release
+    assert first.attrs == {"event_id": "CPI:2025-01-15"}
+    (beyond,) = _cpi("2026-12-01", datetime(2027, 3, 1, tzinfo=UTC))  # no later release
+    assert beyond.knowledge_time == datetime(2027, 1, 1, tzinfo=UTC) + timedelta(days=45)
+    assert beyond.kt_quality == "assumed"
+
+
+def test_daily_series_keep_the_next_day_rule() -> None:
+    (dff,) = FredCollector().normalize(
+        {"series": "DFF", "date": "2026-02-02", "value": "3.64"}, FETCHED
+    )
+    assert dff.knowledge_time == datetime(2026, 2, 4, tzinfo=UTC)
+    assert dff.attrs == {}
 
 
 def test_kt_quality_is_declared() -> None:

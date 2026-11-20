@@ -123,7 +123,7 @@ updated or deleted. Two guarantees are enforced by tests:
 | `kalshi` | Kalshi trade API v2, daily candles; historical endpoints for older settled markets | none | end of the candle period | `source` |
 | `polymarket` | Gamma events API and CLOB daily price history of the YES token | none | timestamp of the price point | `source` |
 | `tradier.options` | Tradier quotes with greeks, ATM call and put per expiry | `TRADIER_TOKEN` | fetch time | `observed` |
-| `fred` | FRED keyless CSV: SP500, DFF, CPIAUCSL | none | observation date + 1 day + per-series lag (0, 1, 14 days) | `assumed` |
+| `fred` | FRED keyless CSV: SP500, DFF, CPIAUCSL | none | SP500, DFF: observation date + 1 day + lag (0, 1 day). CPIAUCSL: the first CPI release in the packaged calendar after the reference month ends; outside the calendar, month end + 45 days | `assumed`; CPIAUCSL `source` (fallback `assumed`) |
 | `noaa` | NCEI Access Data Service, daily TMAX, Central Park | none | observation date + 36 hours | `assumed` |
 | `cftc` | CFTC Socrata, Traders in Financial Futures, E-mini S&P 500 | none | first Friday at least 3 days after the report date, 15:30 New York | `source` |
 | `edgar` | SEC submissions JSON, Form 4 count per filing day | `EVENTLAKE_CONTACT` (User-Agent) | latest acceptance time that day | `source` |
@@ -142,11 +142,10 @@ updated or deleted. Two guarantees are enforced by tests:
 
 ## Limitations
 
-- FRED and NOAA knowledge times are assumed from a fixed lag. FRED's vintage API (ALFRED)
-  would replace the assumption for FRED with recorded release dates.
-- FRED's lag is counted from the observation date, which for monthly series is the first day
-  of the month. For CPIAUCSL this puts the assumed knowledge time weeks before the actual
-  release. The panel and demo use only SP500, which is unaffected.
+- FRED daily series and NOAA knowledge times are assumed from a fixed lag. FRED's vintage API
+  (ALFRED) would replace the assumption for FRED with recorded release dates.
+- CPIAUCSL is matched to the calendar on the assumption of one CPI release per reference
+  month: a month whose release was cancelled is dated at the next release that exists.
 - CFTC knowledge time does not model releases delayed by holidays.
 - Events and market-to-event links are reference data read as currently stored. A market
   linked later can change which already-priced market a past panel row shows (only to one
