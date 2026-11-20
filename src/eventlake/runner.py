@@ -5,6 +5,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit, urlunsplit
 
 from eventlake.store import Store
 from eventlake.types import Observation, ValidationError, utc
@@ -44,7 +45,30 @@ def _utc_now() -> datetime:
 def _describe(exc: BaseException) -> str:
     url = getattr(exc, "url", None)
     text = f"{type(exc).__name__}: {exc}"
-    return f"{text} ({url})" if url else text
+    if not url:
+        return text
+    parts = urlsplit(str(url))
+    return f"{text} ({urlunsplit((parts.scheme, parts.netloc, parts.path, '', ''))})"
+
+
+def _quarantine(store: Store, feed: str, raw: Any, reason: str, at: datetime) -> None:
+    """Quarantine ``raw``; if it cannot be serialised, store its ``repr`` instead."""
+    try:
+        store.quarantine(feed, raw, reason, at=at)
+    except Exception:
+        store.quarantine(feed, repr(raw), reason, at=at)
+
+
+def _obs_raw(o: Observation) -> dict[str, Any]:
+    return {
+        "feed": o.feed,
+        "series_id": o.series_id,
+        "event_time": o.event_time.isoformat(),
+        "knowledge_time": o.knowledge_time.isoformat(),
+        "value": o.value,
+        "kt_quality": o.kt_quality,
+        "attrs": dict(o.attrs),
+    }
 
 
 def run_collector(
@@ -57,15 +81,24 @@ def run_collector(
 ) -> RunResult:
     """Fetch, normalise and append one window; always writes exactly one ``feed_runs`` row.
 
-    Records whose normalisation fails are quarantined and skipped. A failure of ``fetch`` or
-    of the final append ends the run as ``failed`` without raising.
+    Records whose normalisation fails with ``ValidationError``, ``KeyError``, ``TypeError`` or
+    ``ValueError`` are quarantined and skipped. Any other exception from ``normalize`` or from
+    the ``fetch`` iterator ends the run as ``failed``; observations gathered so far are still
+    appended. The batch is appended with one ``store.append`` call. If that raises
+    ``ValidationError`` (nothing was written), each observation is appended individually and
+    those that raise ``ValidationError`` are quarantined, so one bad row does not discard the
+    rest; the run is then ``partial``. Any other ``append`` exception makes the run ``failed``
+    with ``rows_written`` 0. ``run_collector`` never raises for vendor or store-validation
+    errors; naive ``start``/``end`` raise ``ValueError`` before anything is recorded.
     """
+    start = utc(start)
+    end = utc(end)
     run_id = str(uuid.uuid4())
     started_at = utc(now())
     fetched = 0
     quarantined = 0
     written = 0
-    error: str | None = None
+    errors: list[str] = []
     batch: list[Observation] = []
 
     try:
@@ -74,18 +107,35 @@ def run_collector(
             try:
                 batch.extend(collector.normalize(raw, started_at))
             except _RECORD_ERRORS as exc:
-                store.quarantine(collector.feed, raw, f"{type(exc).__name__}: {exc}", at=started_at)
+                _quarantine(store, collector.feed, raw, f"{type(exc).__name__}: {exc}", started_at)
                 quarantined += 1
     except Exception as exc:
-        error = _describe(exc)
+        errors.append(_describe(exc))
 
     try:
         written = store.append(batch, ingested_at=started_at)
+    except ValidationError:
+        try:
+            for o in sorted(batch, key=lambda x: x.knowledge_time):
+                try:
+                    written += store.append([o], ingested_at=started_at)
+                except ValidationError as exc:
+                    _quarantine(
+                        store, collector.feed, _obs_raw(o), f"ValidationError: {exc}", started_at
+                    )
+                    quarantined += 1
+        except Exception as exc:
+            errors.append(_describe(exc))
     except Exception as exc:
         written = 0
-        error = error or _describe(exc)
+        errors.append(_describe(exc))
 
+    error = "; ".join(errors) if errors else None
     status: Status = "failed" if error else ("partial" if quarantined else "ok")
+    try:
+        finished_at = utc(now())
+    except Exception:
+        finished_at = started_at
     store.execute(
         "INSERT INTO feed_runs (run_id, feed, started_at, finished_at, status, rows_fetched, "
         "rows_written, rows_quarantined, error) VALUES (?,?,?,?,?,?,?,?,?)",
@@ -93,7 +143,7 @@ def run_collector(
             run_id,
             collector.feed,
             started_at,
-            utc(now()),
+            finished_at,
             status,
             fetched,
             written,
