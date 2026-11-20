@@ -1,4 +1,7 @@
+import functools
 import re
+import socket
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -8,7 +11,7 @@ from typer.testing import CliRunner
 
 from eventlake import cli, demo
 from eventlake.panel import eve_panel
-from eventlake.types import parse_utc
+from eventlake.types import Observation, parse_utc
 
 runner = CliRunner()
 DATA = Path(demo.__file__).parent / "demo_data"
@@ -21,6 +24,14 @@ SECTIONS = (
 
 def run_demo(*extra: str) -> Any:
     return runner.invoke(cli.app, ["demo", "--offline", *extra])
+
+
+@functools.cache
+def default_output() -> str:
+    result = run_demo()
+    assert result.exit_code == 0, result.output
+    out: str = result.output
+    return out
 
 
 def table_rows(text: str, heading: str) -> list[list[str]]:
@@ -36,18 +47,49 @@ def table_rows(text: str, heading: str) -> list[list[str]]:
 
 
 def test_demo_offline_runs_without_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    def refuse(*args: Any, **kwargs: Any) -> Any:
-        raise AssertionError("network used")
+    attempts: list[str] = []
 
-    monkeypatch.setattr(requests.Session, "request", refuse)
+    def recorder(name: str) -> Any:
+        def refuse(*args: Any, **kwargs: Any) -> Any:
+            attempts.append(name)
+            raise OSError("network used")
+
+        return refuse
+
+    monkeypatch.setattr(requests.Session, "request", recorder("Session.request"))
+    monkeypatch.setattr(requests.adapters.HTTPAdapter, "send", recorder("HTTPAdapter.send"))
+    monkeypatch.setattr(socket.socket, "connect", recorder("socket.connect"))
     result = run_demo()
     assert result.exit_code == 0, result.output
+    store, _ = demo.build_store(True, demo.default_now())
+    try:
+        statuses = {r[0] for r in store.execute("SELECT status FROM feed_runs")}
+    finally:
+        store.close()
+    assert attempts == []
+    assert "failed" not in statuses and statuses
+
+
+def test_demo_mismatch_is_reported_and_exits_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    real = demo.build_store
+
+    def leaky(offline: bool, now: Any, cutoff: Any = None) -> Any:
+        store, events = real(offline, now, cutoff)
+        if cutoff is None:  # only the full store sees an extra IV known before the eve
+            at = datetime(2026, 10, 27, 17, tzinfo=UTC)
+            store.append([Observation("tradier.options", "SPY:2026-10-30:atm_iv", at, at, 0.9)])
+        return store, events
+
+    monkeypatch.setattr(demo, "build_store", leaky)
+    result = run_demo()
+    assert result.exit_code == 1
+    assert "WARNING" in result.output and "FOMC:2026-10-28" in result.output
+    assert "implied_move" in result.output
+    assert "matched" not in result.output
 
 
 def test_demo_offline_output_shape() -> None:
-    result = run_demo()
-    assert result.exit_code == 0, result.output
-    out = result.output
+    out = default_output()
     for heading in SECTIONS:
         assert heading in out
     eve = table_rows(out, SECTIONS[0])
@@ -64,7 +106,7 @@ def test_demo_offline_output_shape() -> None:
 
 
 def test_demo_labels_implied_move_as_synthetic_everywhere() -> None:
-    out = run_demo().output
+    out = default_output()
     assert out.count("implied move (synthetic sample)") >= 3  # two headers plus the note
     assert "illustrative" in out
     tables = out.split(SECTIONS[2])[0]
@@ -73,14 +115,15 @@ def test_demo_labels_implied_move_as_synthetic_everywhere() -> None:
 
 
 def test_demo_what_changed_counts_match_the_tables() -> None:
-    out = run_demo().output
+    out = default_output()
     eve = table_rows(out, SECTIONS[0])
     now = table_rows(out, SECTIONS[1])
     filled = sum(1 for a, b in zip(eve, now, strict=True) for i in (3, 4, 5)
                  if a[i] == "—" and b[i] != "—")  # fmt: skip
     claim = re.search(r"(\d+) cells went from empty to filled", out)
     assert claim and int(claim.group(1)) == filled
-    assert "No value in table 1 changed" in out
+    assert "recomputed from a store holding only data known at its as-of time" in out
+    assert "and matched." in out
 
 
 def test_demo_is_deterministic() -> None:
@@ -88,16 +131,16 @@ def test_demo_is_deterministic() -> None:
     b = run_demo("--now", "2026-11-19T18:00:00+00:00")
     assert a.exit_code == b.exit_code == 0
     assert a.output == b.output
-    assert run_demo().output == a.output  # the default clock is the stored one
+    assert default_output() == a.output  # the default clock is the stored one
 
 
 def test_demo_default_now_is_stored_with_the_data() -> None:
     assert demo.default_now() == parse_utc("2026-11-19T18:00:00+00:00")
-    assert "Demo clock fixed at 2026-11-19T18:00Z" in run_demo().output
+    assert "Demo clock fixed at 2026-11-19T18:00Z" in default_output()
 
 
 def test_demo_health_lists_demo_feeds_and_synthetic_note() -> None:
-    out = run_demo().output
+    out = default_output()
     for feed in ("fred", "kalshi", "noaa", "polymarket", "tradier.options"):
         assert re.search(rf"(?m)^{re.escape(feed)}\s+(OK|WARN)\b", out), feed
     assert "synthetic sample" in out.split("Feed health")[1]

@@ -99,6 +99,23 @@ class _SavedHttp:
         return {"markets": self._kalshi.get(params.get("series_ticker", ""), [])}
 
 
+class KnownBy:
+    """Wraps a collector so only observations known at or before ``cutoff`` are kept."""
+
+    def __init__(self, inner: Collector, cutoff: datetime) -> None:
+        self.feed = inner.feed
+        self._inner = inner
+        self._cutoff = utc(cutoff)
+
+    def fetch(self, start: datetime, end: datetime) -> Iterator[Any]:
+        return self._inner.fetch(start, end)
+
+    def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
+        return [
+            o for o in self._inner.normalize(raw, fetched_at) if o.knowledge_time <= self._cutoff
+        ]
+
+
 @dataclass(frozen=True)
 class Source:
     collector: Collector
@@ -135,8 +152,14 @@ def _live_sources(start: datetime, now: datetime) -> list[Source]:
     return out
 
 
-def build_store(offline: bool, now: datetime) -> tuple[Store, list[Event]]:
-    """A fresh in-memory store loaded through the real runner; returns it with its events."""
+def build_store(
+    offline: bool, now: datetime, cutoff: datetime | None = None
+) -> tuple[Store, list[Event]]:
+    """A fresh in-memory store loaded through the real runner; returns it with its events.
+
+    With ``cutoff``, only observations known at or before it are loaded; events, markets and
+    links are loaded exactly as without it.
+    """
     now = utc(now)
     if offline:
         wanted = set(manifest()["events"])
@@ -158,7 +181,8 @@ def build_store(offline: bool, now: datetime) -> tuple[Store, list[Event]]:
     if offline:
         collectors.append(SyntheticIvCollector())
     for collector in collectors:
-        run_collector(collector, store, first, now, now=clock)
+        wrapped = KnownBy(collector, cutoff) if cutoff is not None else collector
+        run_collector(wrapped, store, first, now, now=clock)
     return store, events
 
 
@@ -208,15 +232,31 @@ def _changes(eve: Sequence[PanelRow], now: Sequence[PanelRow]) -> tuple[int, int
     return filled, emptied
 
 
-def eve_view_is_stable(store: Store, eve: Sequence[PanelRow]) -> bool:
-    """True if re-reading each eve row at its own ``as_of`` through ``event_panel`` agrees."""
+_FIELDS = ("market_id", "market_prob", "implied_move", "realized_move")
+
+
+def eve_view_mismatches(offline: bool, now: datetime, eve: Sequence[PanelRow]) -> list[str]:
+    """Recompute each eve row from a store holding only data known at its as-of time.
+
+    Returns one line per row whose recomputed value differs, naming the event and fields.
+    """
+    problems: list[str] = []
     for row in eve:
-        again = [
-            r for r in event_panel(store, row.as_of, (row.kind,)) if r.event_id == row.event_id
+        store, _ = build_store(offline, now, cutoff=row.as_of)
+        try:
+            again = [r for r in eve_panel(store, until=now) if r.event_id == row.event_id]
+        finally:
+            store.close()
+        if again == [row]:
+            continue
+        other = again[0] if again else None
+        diffs = [
+            f"{f} (full {getattr(row, f)!r}, truncated {getattr(other, f, None)!r})"
+            for f in _FIELDS
+            if getattr(row, f) != getattr(other, f, None)
         ]
-        if again != [row]:
-            return False
-    return True
+        problems.append(f"{row.event_id}: " + ", ".join(diffs or ["row missing or other field"]))
+    return problems
 
 
 def demo_health(store: Store, now: datetime, offline: bool) -> list[FeedStatus]:
@@ -226,15 +266,16 @@ def demo_health(store: Store, now: datetime, offline: bool) -> list[FeedStatus]:
 
 def render_demo(
     offline: bool, now: datetime, table: Callable[..., str], health: Callable[..., str]
-) -> str:
+) -> tuple[str, bool]:
+    """The demo text and whether every self-check passed."""
     store, events = build_store(offline, now)
     try:
         eve = eve_panel(store, until=now)
         later = event_panel(store, now)
         statuses = demo_health(store, now, offline)
-        stable = eve_view_is_stable(store, eve)
     finally:
         store.close()
+    problems = eve_view_mismatches(offline, now, eve)
     out: list[str] = []
     if offline:
         meta = manifest()
@@ -275,10 +316,16 @@ def render_demo(
         f" ({realised} are realised moves, known only after the close).",
         f"{emptied} cells went from filled to empty: an implied move is only defined before its"
         " event, and a market price older than 7 days counts as unknown.",
-        "No value in table 1 changed: each row is read at its own as-of time, so later"
-        " data cannot enter it."
-        if stable
-        else "WARNING: a value in table 1 differs when re-read at its as-of time.",
+        *(
+            [
+                "Each row in table 1 was recomputed from a store holding only data known at its"
+                " as-of time, and matched."
+            ]
+            if not problems
+            else [
+                f"WARNING: table 1 row not reproduced from data known then: {p}" for p in problems
+            ]
+        ),
         "",
         "Feed health" + (" (runs are stamped with the demo clock)" if offline else ""),
         health(statuses),
@@ -289,4 +336,4 @@ def render_demo(
             f"{_OPTIONS_FEED} is the synthetic sample; cftc and edgar are not part of the demo.",
             "A noaa gap warning is genuine: the recorded summaries trail the demo clock.",
         ]
-    return "\n".join(out)
+    return "\n".join(out), not problems

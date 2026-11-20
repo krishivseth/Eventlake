@@ -210,4 +210,7 @@ def demo(
     from eventlake.demo import default_now, render_demo
 
     clock = parse_when(now) if now else (default_now() if offline else _now())
-    typer.echo(render_demo(offline, clock, format_table, render_health))
+    text, ok = render_demo(offline, clock, format_table, render_health)
+    typer.echo(text)
+    if not ok:
+        raise typer.Exit(1)
