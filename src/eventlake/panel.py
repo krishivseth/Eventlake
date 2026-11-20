@@ -17,7 +17,7 @@ import pyarrow.parquet as pq
 
 from eventlake.calendar import Event, EventKind
 from eventlake.derived import implied_event_move, realized_move
-from eventlake.entities import Market, markets_for_event
+from eventlake.entities import Market, markets_for_event, selection_for
 from eventlake.store import Snapshot, Store
 from eventlake.types import utc
 
@@ -78,6 +78,9 @@ def _top_market(store: Store, snap: Snapshot, event: Event) -> tuple[Market, flo
     ]
     if not priced:
         return None
+    ladder = [mp for mp in priced if selection_for(mp[0]) == "ladder"]
+    if ladder:  # threshold rungs: the most informative one is the closest to a coin flip
+        return min(ladder, key=lambda mp: (round(abs(mp[1] - 0.5), 9), mp[0].market_id))
     return min(priced, key=lambda mp: (-mp[1], mp[0].market_id))  # ties: lowest market_id
 
 
@@ -101,7 +104,10 @@ def event_panel(
 ) -> list[PanelRow]:
     """One row per stored event of ``kinds`` scheduled at most 30 days after ``as_of``.
 
-    ``market_*`` describes the linked market with the highest probability in the snapshot.
+    ``market_*`` describes one linked market: among mutually exclusive outcomes, the one with
+    the highest probability in the snapshot (ties: lower ``market_id``). When any priced
+    candidate belongs to a threshold ladder (its link rule's ``selection``), it is instead the
+    ladder rung whose probability is closest to 0.5, because the extreme rungs are near certain.
     A market's probability counts only if its latest observation is at most 7 days older than
     ``as_of``; a market that stopped trading earlier is unknown, and when no linked market is
     known the three ``market_*`` fields are ``None``.

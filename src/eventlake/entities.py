@@ -56,6 +56,7 @@ class LinkRule:
     series_ticker: str
     kind: EventKind
     tolerance: timedelta
+    selection: Literal["categorical", "ladder"] = "categorical"
 
     @property
     def name(self) -> str:
@@ -67,10 +68,18 @@ _WEATHER_TOLERANCE = timedelta(hours=24)
 
 LINK_RULES: tuple[LinkRule, ...] = (
     LinkRule("kalshi", "KXFEDDECISION", "FOMC", _DECISION_TOLERANCE),
-    LinkRule("kalshi", "KXCPI", "CPI", _DECISION_TOLERANCE),
+    LinkRule("kalshi", "KXCPI", "CPI", _DECISION_TOLERANCE, "ladder"),
     LinkRule("kalshi", "KXHIGHNY", "WEATHER_HIGH", _WEATHER_TOLERANCE),
     LinkRule("polymarket", "fed-decision", "FOMC", _DECISION_TOLERANCE),
 )
+
+
+def selection_for(market: Market) -> Literal["categorical", "ladder"]:
+    """How the panel chooses among this market's siblings: by its link rule, else categorical."""
+    for rule in LINK_RULES:
+        if (rule.venue, rule.series_ticker) == (market.venue, market.series_ticker):
+            return rule.selection
+    return "categorical"
 
 
 def _row_to_market(row: tuple[Any, ...]) -> Market:

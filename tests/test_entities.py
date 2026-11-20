@@ -186,3 +186,8 @@ def test_cpi_market_links_to_cpi_event() -> None:
     assert [m.venue_ticker for m in markets_for_event(store, "CPI:2026-11-10")] == [
         "KXCPI-26OCT-T1.0"
     ]
+
+
+def test_only_the_cpi_ladder_rule_selects_by_ladder() -> None:
+    ladders = {r.name for r in LINK_RULES if r.selection == "ladder"}
+    assert ladders == {"kalshi:KXCPI"}

@@ -4,8 +4,10 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from eventlake.entities import upsert_markets
+from eventlake.calendar import upsert_events
+from eventlake.entities import Market, upsert_markets
 from eventlake.panel import PanelRow, eve_panel, event_panel, export_parquet
+from eventlake.store import Store
 from eventlake.types import Observation
 from panel_helpers import CPI, FOMC1, MOVE, build_store, kalshi_market, link, prob_obs, utc_at
 
@@ -152,3 +154,47 @@ def test_export_parquet_empty_and_nulls(tmp_path: Path) -> None:
     rows = event_panel(build_store(), utc_at(2026, 2, 1), kinds=("CPI",))
     export_parquet(rows, path)
     assert pq.read_table(path).to_pylist()[0]["market_prob"] is None
+
+
+def _cpi_ladder(probs: dict[str, float]) -> Store:
+    store = Store()
+    upsert_events(store, [CPI])
+    close = CPI.scheduled_time
+    obs: list[Observation] = []
+    for rung, p in probs.items():
+        ticker = f"KXCPI-26JAN-T{rung}"
+        upsert_markets(
+            store, [Market(f"kalshi:{ticker}", "kalshi", ticker, "KXCPI", ticker, close, {})]
+        )
+        link(store, CPI.event_id, f"kalshi:{ticker}")
+        obs.append(prob_obs("kalshi", ticker, utc_at(2026, 2, 10), p))
+    store.append(obs)
+    return store
+
+
+def test_ladder_picks_the_rung_closest_to_a_coin_flip() -> None:
+    store = _cpi_ladder({"0.0": 0.99, "0.2": 0.62, "0.4": 0.08})
+    r = _row(event_panel(store, utc_at(2026, 2, 10, 12)), CPI.event_id)
+    assert r.market_id == "kalshi:KXCPI-26JAN-T0.2"
+    assert r.market_prob == 0.62
+
+
+def test_ladder_tie_goes_to_the_lower_market_id() -> None:
+    store = _cpi_ladder({"0.4": 0.7, "0.0": 0.3})
+    r = _row(event_panel(store, utc_at(2026, 2, 10, 12)), CPI.event_id)
+    assert r.market_id == "kalshi:KXCPI-26JAN-T0.0"
+
+
+def test_ladder_ignores_unpriced_rungs_and_mixed_categorical_candidates() -> None:
+    store = _cpi_ladder({"0.0": 0.99, "0.2": 0.62})
+    upsert_markets(
+        store,
+        [Market("polymarket:x", "polymarket", "x", "other", "x", CPI.scheduled_time,
+                {"yes_token_id": "tok-x"})],
+    )  # fmt: skip
+    link(store, CPI.event_id, "polymarket:x")
+    store.append([prob_obs("polymarket", "tok-x", utc_at(2026, 2, 10), 0.97)])
+    r = _row(event_panel(store, utc_at(2026, 2, 10, 12)), CPI.event_id)
+    assert r.market_id == "kalshi:KXCPI-26JAN-T0.2"  # a categorical 0.97 does not outrank it
+    only_categorical = _row(event_panel(build_store(), utc_at(2026, 1, 27, 19)), FOMC1.event_id)
+    assert only_categorical.market_prob == 0.71
