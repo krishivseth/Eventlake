@@ -26,6 +26,10 @@ def _load(name: str) -> dict[str, Any]:
     return data
 
 
+def _cutoff() -> None:
+    responses.add(responses.GET, f"{BASE}/historical/cutoff", json=_load("cutoff.json"))
+
+
 def _markets_only_fed() -> Any:
     """Serve the markets fixture for the Fed series and nothing for the others."""
 
@@ -48,6 +52,7 @@ def _register_markets() -> None:
 
 @responses.activate
 def test_list_markets_parses_fixture() -> None:
+    _cutoff()
     _register_markets()
     markets = KalshiCollector().list_markets(START, END)
     assert len(markets) == 3
@@ -61,6 +66,7 @@ def test_list_markets_parses_fixture() -> None:
 
 @responses.activate
 def test_list_markets_filters_to_window() -> None:
+    _cutoff()
     _register_markets()
     late = datetime(2026, 11, 5, tzinfo=UTC)
     assert KalshiCollector().list_markets(late, datetime(2026, 11, 30, tzinfo=UTC)) == []
@@ -68,6 +74,7 @@ def test_list_markets_filters_to_window() -> None:
 
 @responses.activate
 def test_pagination_follows_cursor() -> None:
+    _cutoff()
     full = _load("markets_kxfeddecision.json")
     page1 = {"cursor": "abc", "markets": full["markets"][:2]}
     page2 = {"cursor": "", "markets": full["markets"][2:]}
@@ -75,9 +82,10 @@ def test_pagination_follows_cursor() -> None:
     responses.add(responses.GET, f"{BASE}/markets", json=page2)
     markets = KalshiCollector(series=["KXFEDDECISION"]).list_markets(START, END)
     assert len(markets) == 3
-    assert len(responses.calls) == 2
-    assert "cursor=abc" in responses.calls[1].request.url
-    assert "cursor" not in responses.calls[0].request.url
+    pages = [c for c in responses.calls if urlsplit(c.request.url).path.endswith("/markets")]
+    assert len(pages) == 2
+    assert "cursor=abc" in pages[1].request.url
+    assert "cursor" not in pages[0].request.url
 
 
 def _normalize_first(collector: KalshiCollector) -> list[Any]:
@@ -120,6 +128,7 @@ def test_normalize_skips_candle_without_trades() -> None:
 
 @responses.activate
 def test_run_collector_end_to_end() -> None:
+    _cutoff()
     _register_markets()
     responses.add(
         responses.GET,
@@ -157,6 +166,7 @@ def _fed_page_with_open_time(ticker: str, open_time: str) -> dict[str, Any]:
 
 @responses.activate
 def test_fetch_skips_market_opened_after_end() -> None:
+    _cutoff()
     late = "KXFEDDECISION-26OCT-H25"
     page = _fed_page_with_open_time(late, "2026-12-01T00:00:00Z")
     responses.add(responses.GET, f"{BASE}/markets", json=page)
@@ -172,6 +182,7 @@ def test_fetch_skips_market_opened_after_end() -> None:
 
 @responses.activate
 def test_fetch_sends_window_and_daily_interval() -> None:
+    _cutoff()
     responses.add(responses.GET, f"{BASE}/markets", json=_load("markets_kxfeddecision.json"))
     responses.add(responses.GET, CANDLES, json=_load("candlesticks_h0.json"))
     list(KalshiCollector(series=["KXFEDDECISION"]).fetch(START, END))
@@ -201,6 +212,7 @@ def test_normalize_skips_candle_that_has_not_ended() -> None:
 
 @responses.activate
 def test_list_markets_skips_malformed_market() -> None:
+    _cutoff()
     page = _load("markets_kxfeddecision.json")
     del page["markets"][0]["close_time"]
     responses.add(responses.GET, f"{BASE}/markets", json=page)
@@ -211,14 +223,89 @@ def test_list_markets_skips_malformed_market() -> None:
     ]
 
 
-def test_normalize_reads_historical_candle_price_close() -> None:
-    raw = {
-        "series": "KXFEDDECISION",
-        "ticker": "KXFEDDECISION-26JUL-H26",
-        "candle": {
-            "end_period_ts": 1782014400,
-            "price": {"close": "0.0100", "high": "0.0100"},
-        },
-    }
+def test_normalize_reads_recorded_historical_candle() -> None:
+    body = _load("historical_candlesticks.json")
+    candle = body["candlesticks"][0]
+    assert "close_dollars" not in candle["price"]  # the historical shape
+    raw = {"series": "KXCPI", "ticker": body["ticker"], "candle": candle}
     (obs,) = KalshiCollector().normalize(raw, FETCHED + timedelta(days=300))
-    assert obs.value == 0.01
+    assert obs.series_id == body["ticker"]
+    assert obs.value == float(candle["price"]["close"])
+
+
+HIST_START = datetime(2026, 8, 1, tzinfo=UTC)
+HIST_END = datetime(2026, 8, 31, tzinfo=UTC)
+HIST_CANDLES = re.compile(rf"{re.escape(BASE)}/historical/markets/[^/]+/candlesticks")
+
+
+def _cpi_only_historical(live: dict[str, Any] | None = None) -> None:
+    _cutoff()
+    responses.add(responses.GET, f"{BASE}/markets", json=live or {"markets": []})
+    responses.add(
+        responses.GET, f"{BASE}/historical/markets", json=_load("historical_markets_kxcpi.json")
+    )
+
+
+@responses.activate
+def test_list_markets_falls_back_to_historical_before_the_cutoff() -> None:
+    _cpi_only_historical()
+    markets = KalshiCollector(series=["KXCPI"]).list_markets(HIST_START, HIST_END)
+    assert [m.venue_ticker for m in markets] == [
+        "KXCPI-26JUL-T-0.4",
+        "KXCPI-26JUL-T-0.3",
+        "KXCPI-26JUL-T-0.2",
+    ]
+    assert markets[0].close_time == datetime(2026, 8, 12, 12, 25, tzinfo=UTC)
+    hist = [c for c in responses.calls if "/historical/markets" in c.request.url]
+    assert "min_close_ts" not in hist[0].request.url
+
+
+@responses.activate
+def test_historical_listing_is_skipped_at_or_after_the_cutoff() -> None:
+    _cutoff()
+    responses.add(responses.GET, f"{BASE}/markets", json={"markets": []})
+    KalshiCollector(series=["KXCPI"]).list_markets(START, END)
+    assert not any("/historical/markets" in c.request.url for c in responses.calls)
+
+
+@responses.activate
+def test_historical_listing_drops_markets_closing_before_the_window() -> None:
+    _cpi_only_historical()
+    late = datetime(2026, 8, 13, tzinfo=UTC)
+    assert KalshiCollector(series=["KXCPI"]).list_markets(late, HIST_END) == []
+
+
+@responses.activate
+def test_historical_listing_does_not_repeat_a_live_ticker() -> None:
+    hist = _load("historical_markets_kxcpi.json")
+    _cpi_only_historical({"markets": [hist["markets"][0]]})
+    markets = KalshiCollector(series=["KXCPI"]).list_markets(HIST_START, HIST_END)
+    assert [m.venue_ticker for m in markets].count("KXCPI-26JUL-T-0.4") == 1
+    assert len(markets) == 3
+
+
+@responses.activate
+def test_fetch_uses_historical_candlesticks_for_historical_markets() -> None:
+    _cpi_only_historical()
+    responses.add(responses.GET, HIST_CANDLES, json=_load("historical_candlesticks.json"))
+    collector = KalshiCollector(series=["KXCPI"])
+    records = list(collector.fetch(HIST_START, HIST_END))
+    paths = [
+        urlsplit(c.request.url).path for c in responses.calls if "candlesticks" in c.request.url
+    ]
+    assert len(paths) == 3 and all("/historical/markets/" in p for p in paths)
+    assert len(records) == 3 * 5
+    assert collector.normalize(records[0], FETCHED + timedelta(days=300))[0].value > 0
+
+
+@responses.activate
+def test_run_collector_ingests_historical_markets() -> None:
+    _cpi_only_historical()
+    responses.add(responses.GET, HIST_CANDLES, json=_load("historical_candlesticks.json"))
+    store = Store()
+    now = datetime(2026, 11, 20, tzinfo=UTC)
+    result = run_collector(KalshiCollector(series=["KXCPI"]), store, HIST_START, HIST_END,
+                           now=lambda: now)  # fmt: skip
+    assert result.status == "ok", result.error
+    assert result.rows_written > 0
+    assert "KXCPI-26JUL-T-0.4" in store.as_of(now).series_ids("kalshi")

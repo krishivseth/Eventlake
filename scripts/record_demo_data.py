@@ -20,7 +20,7 @@ from typing import Any
 import requests
 
 from eventlake.calendar import Event, load_events
-from eventlake.collectors.kalshi import BASE_URL as KALSHI
+from eventlake.collectors.kalshi import KalshiCollector
 from eventlake.collectors.noaa import BASE_URL as NOAA
 from eventlake.collectors.polymarket import CLOB_HISTORY, GAMMA_EVENTS
 from eventlake.http import DEFAULT_USER_AGENT
@@ -66,56 +66,30 @@ def events() -> dict[str, Event]:
     return {e.event_id: e for e in load_events() if e.event_id in EVENT_IDS}
 
 
-def kalshi_listing(series: str) -> dict[str, tuple[dict[str, Any], bool]]:
-    """ticker -> (raw market, listed on the live endpoint)."""
-    found: dict[str, tuple[dict[str, Any], bool]] = {}
-    for path, live in (("/historical/markets", False), ("/markets", True)):
-        cursor = ""
-        while True:
-            params: dict[str, Any] = {"series_ticker": series, "limit": 1000}
-            if live:
-                params["min_close_ts"] = ts(WINDOW_START)
-            if cursor:
-                params["cursor"] = cursor
-            page = get(KALSHI + path, params).json()
-            for m in page.get("markets", []):
-                if WINDOW_START <= parse(m["close_time"]) <= RECORDED_END:
-                    found[m["ticker"]] = (m, live)
-            cursor = page.get("cursor") or ""
-            if not cursor:
-                break
-    return found
-
-
 def record_kalshi(wanted: dict[str, Event]) -> None:
+    collector = KalshiCollector()
     markets: dict[str, list[dict[str, Any]]] = {}
     records: list[dict[str, Any]] = []
     for series, kind in KALSHI_SERIES.items():
-        listing = kalshi_listing(series)
+        listing = [
+            (raw, live)
+            for raw, live in collector.iter_markets(series, WINDOW_START)
+            if parse(raw["close_time"]) <= RECORDED_END
+        ]
         kept: list[dict[str, Any]] = []
         for event in (e for e in wanted.values() if e.kind == kind):
             near = sorted(
                 (
-                    (m, live)
-                    for m, live in listing.values()
-                    if abs(parse(m["close_time"]) - event.scheduled_time) <= TOLERANCE
+                    (raw, live)
+                    for raw, live in listing
+                    if abs(parse(raw["close_time"]) - event.scheduled_time) <= TOLERANCE
                 ),
-                key=lambda ml: ml[0]["ticker"],
+                key=lambda rl: rl[0]["ticker"],
             )[:MAX_MARKETS_PER_EVENT]
             for raw, live in near:
                 kept.append(raw)
                 start = event.scheduled_time - timedelta(days=LEAD_DAYS)
-                end = event.scheduled_time
-                path = (
-                    f"/series/{series}/markets/{raw['ticker']}/candlesticks"
-                    if live
-                    else f"/historical/markets/{raw['ticker']}/candlesticks"
-                )
-                body = get(
-                    KALSHI + path,
-                    {"start_ts": ts(start), "end_ts": ts(end), "period_interval": 1440},
-                ).json()
-                for candle in body.get("candlesticks", []):
+                for candle in collector.candles(series, raw, live, start, event.scheduled_time):
                     records.append({"series": series, "ticker": raw["ticker"], "candle": candle})
         markets[series] = kept
     dump("kalshi_markets.json", markets)

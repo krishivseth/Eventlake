@@ -45,29 +45,54 @@ class KalshiCollector:
             http if http is not None else HttpClient(BASE_URL, limiter=RateLimiter(10, 1.0))
         )
 
-    def _iter_markets(self, series: str, min_close: datetime) -> Iterator[dict[str, Any]]:
-        """Every market of ``series`` closing at or after ``min_close``, following the cursor."""
+    def _pages(self, path: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
+        """Every market of a listing endpoint, following the cursor."""
         cursor = ""
         while True:
-            params: dict[str, Any] = {
-                "series_ticker": series,
-                "min_close_ts": int(utc(min_close).timestamp()),
-                "limit": PAGE_LIMIT,
-            }
-            if cursor:
-                params["cursor"] = cursor
-            page = self._http.get_json("/markets", params)
+            page_params = dict(params, **({"cursor": cursor} if cursor else {}))
+            page = self._http.get_json(path, page_params)
             yield from page.get("markets", [])
             cursor = page.get("cursor") or ""
             if not cursor:
                 return
+
+    def iter_markets(
+        self, series: str, min_close: datetime
+    ) -> Iterator[tuple[dict[str, Any], bool]]:
+        """Markets of ``series`` closing at or after ``min_close`` as ``(raw, is_live)``.
+
+        Settled markets older than the exchange's historical cutoff are served only by the
+        ``/historical`` endpoints, so those are listed too when the window reaches back past
+        the cutoff. A ticker listed live is never repeated from the historical listing.
+        """
+        seen: set[str] = set()
+        params: dict[str, Any] = {
+            "series_ticker": series,
+            "min_close_ts": int(utc(min_close).timestamp()),
+            "limit": PAGE_LIMIT,
+        }
+        for raw in self._pages("/markets", params):
+            seen.add(str(raw.get("ticker")))
+            yield raw, True
+        cutoff = parse_utc(self._http.get_json("/historical/cutoff")["market_settled_ts"])
+        if utc(min_close) >= cutoff:
+            return
+        for raw in self._pages(
+            "/historical/markets", {"series_ticker": series, "limit": PAGE_LIMIT}
+        ):
+            try:
+                closes = parse_utc(raw["close_time"])
+            except (KeyError, TypeError, ValueError):
+                continue  # one malformed entry must not abort the listing
+            if closes >= utc(min_close) and str(raw.get("ticker")) not in seen:
+                yield raw, False
 
     def list_markets(self, start: datetime, end: datetime) -> list[Market]:
         """Markets closing in ``[start, end]``, plus open ones closing after ``end``."""
         start, end = utc(start), utc(end)
         out: list[Market] = []
         for series in self._series:
-            for raw in self._iter_markets(series, start):
+            for raw, _live in self.iter_markets(series, start):
                 try:
                     market = _market(raw, series)
                 except (KeyError, TypeError, ValueError):
@@ -82,21 +107,33 @@ class KalshiCollector:
         """One record per daily candle of every market whose life overlaps the window."""
         start, end = utc(start), utc(end)
         for series in self._series:
-            for raw in self._iter_markets(series, start):
+            for raw, live in self.iter_markets(series, start):
                 opened = parse_utc(raw["open_time"]) if raw.get("open_time") else start
                 if opened > end:
                     continue
-                ticker = raw["ticker"]
-                body = self._http.get_json(
-                    f"/series/{series}/markets/{ticker}/candlesticks",
-                    {
-                        "start_ts": int(max(start, opened).timestamp()),
-                        "end_ts": int(end.timestamp()),
-                        "period_interval": DAY_MINUTES,
-                    },
-                )
-                for candle in body.get("candlesticks", []):
-                    yield {"series": series, "ticker": ticker, "candle": candle}
+                for candle in self.candles(series, raw, live, max(start, opened), end):
+                    yield {"series": series, "ticker": raw["ticker"], "candle": candle}
+
+    def candles(
+        self, series: str, raw: dict[str, Any], live: bool, start: datetime, end: datetime
+    ) -> list[dict[str, Any]]:
+        """Daily candles of one market from the live or the historical endpoint."""
+        ticker = raw["ticker"]
+        path = (
+            f"/series/{series}/markets/{ticker}/candlesticks"
+            if live
+            else f"/historical/markets/{ticker}/candlesticks"
+        )
+        body = self._http.get_json(
+            path,
+            {
+                "start_ts": int(utc(start).timestamp()),
+                "end_ts": int(utc(end).timestamp()),
+                "period_interval": DAY_MINUTES,
+            },
+        )
+        found: list[dict[str, Any]] = body.get("candlesticks", [])
+        return found
 
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
         candle = raw["candle"]

@@ -96,6 +96,8 @@ class _SavedHttp:
         if path == GAMMA_EVENTS:
             first_closed_page = params.get("closed") == "true" and params.get("offset") == 0
             return self._polymarket if first_closed_page else []
+        if path == "/historical/cutoff":  # the saved listing already holds every market
+            return {"market_settled_ts": "1970-01-01T00:00:00Z"}
         return {"markets": self._kalshi.get(params.get("series_ticker", ""), [])}
 
 
