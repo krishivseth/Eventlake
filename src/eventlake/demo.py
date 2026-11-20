@@ -221,14 +221,17 @@ def _market_label(row: PanelRow) -> str:
     return f"{venue}: {title}"
 
 
-def _panel_cells(rows: Sequence[PanelRow]) -> tuple[list[str], list[list[str]]]:
-    headers = ["event", "as of (UTC)", "top market", "market prob", IMPLIED_HEADER, "realised move"]
+def _panel_cells(
+    rows: Sequence[PanelRow], *, with_market: bool
+) -> tuple[list[str], list[list[str]]]:
+    """Table cells; ``with_market`` adds the top market and its probability."""
+    market = ["top market", "market prob"] if with_market else []
+    headers = ["event", "as of (UTC)", *market, IMPLIED_HEADER, "realised move"]
     body = [
         [
             r.event_id,
             _stamp(r.as_of),
-            _market_label(r),
-            pct(r.market_prob, 1),
+            *([_market_label(r), pct(r.market_prob, 1)] if with_market else []),
             pct(r.implied_move, 2),
             pct(r.realized_move, 2),
         ]
@@ -238,7 +241,6 @@ def _panel_cells(rows: Sequence[PanelRow]) -> tuple[list[str], list[list[str]]]:
 
 
 _CELLS = (
-    ("market prob", "market_prob"),
     (IMPLIED_HEADER, "implied_move"),
     ("realised move", "realized_move"),
 )
@@ -311,7 +313,7 @@ def render_demo(offline: bool, now: datetime) -> tuple[str, bool]:
         out += ["eventlake demo (live data)", f"Clock {_stamp(now)}."]
     out.append("")
     out.append("1. As known the day before each event")
-    out.append(format_table(*_panel_cells(eve)))
+    out.append(format_table(*_panel_cells(eve, with_market=True)))
     if offline:
         out.append(
             f"The '{IMPLIED_HEADER}' column is computed by the real solver from illustrative"
@@ -328,7 +330,7 @@ def render_demo(offline: bool, now: datetime) -> tuple[str, bool]:
     out += [
         "",
         "2. The same events, as known two days after each",
-        format_table(*_panel_cells(later)),
+        format_table(*_panel_cells(later, with_market=False)),
     ]
     out += [
         "",

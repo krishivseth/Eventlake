@@ -109,5 +109,7 @@ class ExampleCollector:
         return [Observation(self.feed, "example:value", event, known, value, "assumed")]
 ```
 
-Tests run against a recorded response under `tests/fixtures/<feed>/`, loaded through the
-`responses` library, so they never touch the network.
+Collector tests run against responses under `tests/fixtures/<feed>/`, served through the
+`responses` library, so they never touch the network. The fixtures were recorded from the live
+APIs, except Tradier's, which are hand-built from its documented response shapes (see
+`tests/fixtures/tradier/README.md`).

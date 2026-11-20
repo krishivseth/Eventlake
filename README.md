@@ -1,13 +1,13 @@
 # eventlake
 
-eventlake collects prediction-market prices (Kalshi, Polymarket), option implied vols
-(Tradier), macro series (FRED, CFTC, SEC EDGAR) and weather (NOAA) into an append-only DuckDB
-store where every row records both when it happened (`event_time`) and when it could have
-been known (`knowledge_time`). Every read of observations goes through `store.as_of(ts)`, so a question like
-"what did markets say the day before the September FOMC meeting" is answered only from data
-that existed then, including values that were later revised. On top of the store it builds a
-per-event panel (FOMC, CPI) that sets the prediction-market probability and the option-implied
-move known before each event beside the move that followed.
+eventlake collects prediction-market prices (Kalshi, Polymarket), option implied vols (Tradier),
+macro series (FRED, CFTC, SEC EDGAR) and weather (NOAA) into an append-only DuckDB store where
+every row records when it happened (`event_time`) and when it could have been known
+(`knowledge_time`). Every read of observations goes through `store.as_of(ts)`, so "what did markets
+say the day before the September FOMC meeting" is answered only from data that existed then. That
+covers revisions eventlake itself observed; a backfill from a source that serves only current
+values carries today's vintage (see Limitations). A per-event panel (FOMC, CPI) sets the market
+probability and option-implied move known before each event beside the move that followed.
 
 ## Quickstart
 
@@ -15,10 +15,11 @@ move known before each event beside the move that followed.
 uv sync && uv run eventlake demo --offline
 ```
 
-The offline demo needs no keys or network: it replays public data recorded on 2026-11-20 through the
-real collectors' `normalize`, runner and store. Only the `implied move (synthetic sample)` column is
-not recorded data: it is the real solver run on an illustrative IV sample
-(`src/eventlake/demo_data/synthetic/README.md`), as option history is not included. Real output:
+The offline demo needs no keys or network: it replays public data recorded on 2026-11-20 (by
+`scripts/record_demo_data.py`) through the real collectors' `normalize`, runner and store. Only the
+`implied move (synthetic sample)` column is not recorded data: it is the real solver run on an
+illustrative IV sample (`src/eventlake/demo_data/synthetic/README.md`), as option history is not
+included. Real output:
 
 ```
 eventlake offline demo
@@ -39,21 +40,20 @@ CPI:2026-11-10   2026-11-09T13:30Z  kalshi: Will CPI rise more than 0.2% in Octo
 The 'implied move (synthetic sample)' column is computed by the real solver from illustrative inputs; the other columns come from recorded public data.
 
 2. The same events, as known two days after each
-event            as of (UTC)        top market                                                    market prob  implied move (synthetic sample)  realised move
----------------  -----------------  ------------------------------------------------------------  -----------  -------------------------------  -------------
-FOMC:2026-06-17  2026-06-19T18:00Z  polymarket: Will there be no change in Fed interest rates...  99.6%        -                                1.21%
-FOMC:2026-07-29  2026-07-31T18:00Z  kalshi: Will the Federal Reserve Hike rates by 0bps a...      75.0%        -                                1.52%
-CPI:2026-08-12   2026-08-14T12:30Z  kalshi: Will CPI rise more than 0.0% in July 2026?            67.0%        -                                0.26%
-CPI:2026-09-11   2026-09-13T12:30Z  kalshi: Will CPI rise more than 0.3% in August 2026?          59.0%        -                                0.86%
-FOMC:2026-09-16  2026-09-18T18:00Z  polymarket: Will the Fed increase interest rates by 25 bp...  88.5%        -                                0.45%
-CPI:2026-10-14   2026-10-16T12:30Z  kalshi: Will CPI rise more than 0.5% in September 2026?       68.0%        -                                1.11%
-FOMC:2026-10-28  2026-10-30T18:00Z  kalshi: Will the Federal Reserve Hike rates by 0bps a...      96.0%        -                                0.28%
-CPI:2026-11-10   2026-11-12T13:30Z  kalshi: Will CPI rise more than 0.2% in October 2026?         56.0%        -                                0.38%
+event            as of (UTC)        implied move (synthetic sample)  realised move
+---------------  -----------------  -------------------------------  -------------
+FOMC:2026-06-17  2026-06-19T18:00Z  -                                1.21%
+FOMC:2026-07-29  2026-07-31T18:00Z  -                                1.52%
+CPI:2026-08-12   2026-08-14T12:30Z  -                                0.26%
+CPI:2026-09-11   2026-09-13T12:30Z  -                                0.86%
+FOMC:2026-09-16  2026-09-18T18:00Z  -                                0.45%
+CPI:2026-10-14   2026-10-16T12:30Z  -                                1.11%
+FOMC:2026-10-28  2026-10-30T18:00Z  -                                0.28%
+CPI:2026-11-10   2026-11-12T13:30Z  -                                0.38%
 
 3. What changed between the two tables (number of events)
 column                           empty to filled  filled to empty  value changed
 -------------------------------  ---------------  ---------------  -------------
-market prob                      0                0                8
 implied move (synthetic sample)  0                8                0
 realised move                    8                0                0
 A realised move exists only once the close is known; an implied move is only defined before its event.
@@ -104,7 +104,7 @@ Revision example, illustrative numbers: FRED's keyless CSV gives the SP500 close
 2026-03-02 as 6850.10, stored with `knowledge_time` 2026-03-03T00:00Z (`assumed`). A run on
 2026-03-20 finds 6851.40 for the same key, so the store appends a second version with
 `knowledge_time` set to that run's start and `kt_quality` `observed`. `as_of(2026-03-10)` still
-returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or deleted. Tested:
+returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or deleted. Tests check:
 
 - No read returns a row whose `knowledge_time` is after the as-of time:
   `tests/test_store.py` (`test_no_leak_property`, randomised) and `tests/test_panel.py`
@@ -155,12 +155,13 @@ returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or dele
   (FOMC 2027-11-17, NFP 2027-12-03, CPI 2027-12-10). Past them, FOMC and CPI markets stay
   unlinked, the panel gets no new rows and CPIAUCSL falls back to the assumed month-end + 45
   days rule; `health`, `ingest` and `backfill` warn from 30 days before the end.
+- EDGAR reads only the submissions JSON's `filings.recent` table; older filings, which the SEC
+  lists in separate files, are not fetched. CFTC fetches one page of at most 5,000 rows a run.
 - DuckDB allows one writer per file. `serve` holds the database open, so stop it before
   running `ingest` or `backfill` against the same file.
-- The Tradier collector is built from the documented API; its test fixtures are hand-built
-  from documented response shapes and it has not been run against the live API.
-- Implied-move history needs recorded option data, which is not included; a live store
-  accrues it only from the day option snapshots start being collected.
+- The Tradier collector has not been run against the live API; its test fixtures are hand-built
+  from documented response shapes. Option history is not included, so a live store accrues
+  implied moves only from the day option snapshots start.
 - The live (non-offline) demo path is not covered by automated tests.
 
 ## Running live
@@ -180,11 +181,10 @@ uv run eventlake serve --port 8000                 # read-only API: /events /mar
 
 To keep the store current, schedule `ingest <feed>` daily for each feed, then `health --alert`.
 For `kalshi` and `polymarket`, `ingest` also lists and links the window's markets (`markets: N
-new, links: N new, unlinked: N`); a failed listing is recorded as a failed run and exits 1.
-`GET /markets?linked=false` lists markets no rule could link. `health` checks only feeds that
-have run, listing the rest as not configured; three empty runs in a row fail a feed. A failed
-run keeps the observations it normalised before failing: each is valid on its own and re-runs
-are idempotent, so the next run completes the window.
+new, links: N new, unlinked: N`); a failed listing is a failed run and exits 1. `GET
+/markets?linked=false` lists markets no rule could link. `health` checks feeds that have run and
+lists the rest as not configured. A failed run keeps the observations it normalised: each is
+valid and re-runs are idempotent, so the next run completes the window.
 
 `serve` binds 127.0.0.1 unless given `--host`. `/observations` and `/panel` take `as_of` as
 ISO-8601 with a UTC offset. The Dockerfile runs `serve --host 0.0.0.0 --port 8000`; the store

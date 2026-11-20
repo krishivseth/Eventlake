@@ -95,16 +95,24 @@ def test_demo_offline_output_shape() -> None:
     eve = table_rows(out, SECTIONS[0])
     now = table_rows(out, SECTIONS[1])
     assert len(eve) >= 8 and len(now) >= 8
-    # columns: event, as of, top market, P(yes), implied move, realised move
+    # table 1: event, as of, top market, market prob, implied move, realised move
+    assert all(len(row) == 6 for row in eve)
     assert all(row[-1] == "-" for row in eve), "an eve-view realised move would be hindsight"
+    assert all(re.fullmatch(r"\d+\.\d%", row[3]) for row in eve)
+    # table 2: event, as of, implied move, realised move
+    assert all(len(row) == 4 for row in now)
     assert sum(row[-1] != "-" for row in now) >= 8
-    assert all(re.fullmatch(r"\d+\.\d%", row[-3]) for row in eve)
-    assert all(re.fullmatch(r"\d+\.\d%", row[-3]) for row in now)
-    assert out.isascii()
     assert all(re.fullmatch(r"\d\.\d\d%", row[-1]) for row in now if row[-1] != "-")
+    assert out.isascii()
     assert sum(1 for r in eve if r[0].startswith("FOMC")) >= 4
     assert sum(1 for r in eve if r[0].startswith("CPI")) >= 4
     assert "\x1b[" not in out
+
+
+def test_table_two_shows_only_the_implied_and_realised_moves() -> None:
+    lines = default_output().splitlines()
+    header = re.split(r"\s{2,}", lines[lines.index(SECTIONS[1]) + 1].strip())
+    assert header == ["event", "as of (UTC)", demo.IMPLIED_HEADER, "realised move"]
 
 
 def test_demo_labels_implied_move_as_synthetic_everywhere() -> None:
@@ -124,15 +132,17 @@ def test_demo_what_changed_counts_match_the_tables() -> None:
     start = lines.index(SECTIONS[2]) + 3
     claimed = {
         cells[0]: [int(c) for c in cells[1:]]
-        for cells in (re.split(r"\s{2,}", ln.strip()) for ln in lines[start : start + 3])
+        for cells in (re.split(r"\s{2,}", ln.strip()) for ln in lines[start : start + 2])
     }
-    for label, col in (("market prob", -3), (demo.IMPLIED_HEADER, -2), ("realised move", -1)):
+    assert set(claimed) == {demo.IMPLIED_HEADER, "realised move"}
+    for label, col in ((demo.IMPLIED_HEADER, -2), ("realised move", -1)):
         pairs = list(zip(eve, now, strict=True))
         filled = sum(a[col] == "-" and b[col] != "-" for a, b in pairs)
         emptied = sum(a[col] != "-" and b[col] == "-" for a, b in pairs)
         changed = sum("-" not in (a[col], b[col]) and a[col] != b[col] for a, b in pairs)
         assert claimed[label] == [filled, emptied, changed], label
     assert claimed["realised move"][0] == 8
+    assert claimed[demo.IMPLIED_HEADER][1] == 8
     assert "recomputed from a store holding only data known at its as-of time" in out
     assert "and matched." in out
 
