@@ -7,6 +7,7 @@ synthetic sample (see ``demo_data/synthetic/README.md``) and are always labelled
 
 import csv
 import json
+import unicodedata
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -199,12 +200,22 @@ def _stamp(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%dT%H:%MZ")
 
 
+_PUNCTUATION = str.maketrans("\u2018\u2019\u201c\u201d\u2013\u2014", "''\"\"--")
+
+
+def _ascii(text: str) -> str:
+    """Readable ASCII: accents dropped, common typographic punctuation mapped, rest '?'."""
+    decomposed = unicodedata.normalize("NFKD", text.translate(_PUNCTUATION))
+    kept = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return kept.encode("ascii", "replace").decode("ascii")
+
+
 def _market_label(row: PanelRow) -> str:
     """``venue: title`` with the title cut to ``_TITLE_WIDTH`` characters."""
     if row.market_id is None:
         return _UNKNOWN
     venue = row.market_id.split(":", 1)[0]
-    title = " ".join((row.market_title or row.market_id).split())
+    title = " ".join(_ascii(row.market_title or row.market_id).split())
     if len(title) > _TITLE_WIDTH:
         title = title[: _TITLE_WIDTH - 3] + "..."
     return f"{venue}: {title}"
@@ -284,8 +295,10 @@ def render_demo(offline: bool, now: datetime) -> tuple[str, bool]:
     """The demo text and whether every self-check passed."""
     store, events = build_store(offline, now)
     try:
-        eve = eve_panel(store, until=now)
-        later = eve_panel(store, lead=-_AFTER, until=now - _AFTER)
+        shown_until = now - _AFTER  # both tables cover the same events
+        eve = eve_panel(store, until=shown_until)
+        later = eve_panel(store, lead=-_AFTER, until=shown_until)
+        too_recent = [e.event_id for e in events if e.scheduled_time > shown_until]
         statuses = demo_health(store, now, offline)
     finally:
         store.close()
@@ -311,6 +324,8 @@ def render_demo(offline: bool, now: datetime) -> tuple[str, bool]:
         )
     else:
         out.append(f"No option history is available here, so '{IMPLIED_HEADER}' stays empty.")
+    if too_recent:
+        out.append(f"Not shown: {', '.join(too_recent)} (less than two days old)")
     for kind in _KINDS:
         priced = sum(1 for r in eve if r.kind == kind and r.market_prob is not None)
         if priced < _MIN_PER_KIND:

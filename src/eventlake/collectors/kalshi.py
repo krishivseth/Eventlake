@@ -1,17 +1,19 @@
 """Kalshi prediction-market collector: daily YES-price candles for a fixed set of series."""
 
-from collections.abc import Iterator, Sequence
-from datetime import UTC, datetime
+from collections.abc import Callable, Iterator, Sequence
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from eventlake.entities import Market
-from eventlake.http import HttpClient, RateLimiter
+from eventlake.http import HttpClient, HttpError, RateLimiter
 from eventlake.types import Observation, ValidationError, parse_utc, utc
 
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 FEED = "kalshi"
 DAY_MINUTES = 1440
 PAGE_LIMIT = 1000
+# The historical cutoff trails the present by weeks; a window starting later than this is live-only.
+_RECENT = timedelta(days=30)
 
 # Fed rate decision (one market family per meeting), monthly CPI, NYC daily high temperature.
 KALSHI_SERIES: tuple[str, ...] = ("KXFEDDECISION", "KXCPI", "KXHIGHNY")
@@ -38,9 +40,14 @@ class KalshiCollector:
     feed = FEED
 
     def __init__(
-        self, series: Sequence[str] = KALSHI_SERIES, http: HttpClient | None = None
+        self,
+        series: Sequence[str] = KALSHI_SERIES,
+        http: HttpClient | None = None,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._series = tuple(series)
+        self._clock = clock
         self._http = (
             http if http is not None else HttpClient(BASE_URL, limiter=RateLimiter(10, 1.0))
         )
@@ -74,7 +81,12 @@ class KalshiCollector:
         for raw in self._pages("/markets", params):
             seen.add(str(raw.get("ticker")))
             yield raw, True
-        cutoff = parse_utc(self._http.get_json("/historical/cutoff")["market_settled_ts"])
+        try:
+            cutoff = parse_utc(self._http.get_json("/historical/cutoff")["market_settled_ts"])
+        except HttpError:
+            if utc(min_close) >= utc(self._clock()) - _RECENT:
+                return  # far newer than any cutoff: the live listing is complete
+            raise  # the window may need history, so do not return a partial listing
         if utc(min_close) >= cutoff:
             return
         for raw in self._pages(

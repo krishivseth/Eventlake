@@ -10,7 +10,7 @@ import requests
 from typer.testing import CliRunner
 
 from eventlake import cli, demo
-from eventlake.panel import eve_panel
+from eventlake.panel import PanelRow, eve_panel
 from eventlake.types import Observation, parse_utc
 
 runner = CliRunner()
@@ -192,3 +192,24 @@ def test_replay_collector_delegates_normalisation() -> None:
     assert replay.feed == "fred"
     (raw,) = list(replay.fetch(parse_utc("2026-01-01T00:00:00+00:00"), demo.default_now()))
     assert replay.normalize(raw, demo.default_now()) == real.normalize(raw, demo.default_now())
+
+
+def test_demo_excludes_events_less_than_two_days_old_from_both_tables() -> None:
+    result = run_demo("--now", "2026-11-11T18:00:00+00:00")
+    assert result.exit_code == 0, result.output
+    out = result.output
+    eve = table_rows(out, SECTIONS[0])
+    later = table_rows(out, SECTIONS[1])
+    assert [r[0] for r in eve] == [r[0] for r in later]
+    assert len(eve) == 7 and all(r[0] != "CPI:2026-11-10" for r in eve + later)
+    (line,) = [ln for ln in out.splitlines() if ln.startswith("Not shown:")]
+    assert "CPI:2026-11-10" in line and "less than two days old" in line
+
+
+def test_market_label_folds_non_ascii_titles() -> None:
+    now = demo.default_now()
+    row = PanelRow("E", "CPI", now, now, "kalshi:T", "Will the Fed’s décision hold?", 0.5,
+                   None, None)  # fmt: skip
+    label = demo._market_label(row)
+    assert label.isascii() and label.startswith("kalshi: Will the Fed")
+    assert "Fed's decision hold?" in label

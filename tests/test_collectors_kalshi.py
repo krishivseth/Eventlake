@@ -10,6 +10,7 @@ import responses
 
 from eventlake.collectors import REGISTRY
 from eventlake.collectors.kalshi import KALSHI_SERIES, KalshiCollector
+from eventlake.http import HttpClient, HttpError
 from eventlake.runner import run_collector
 from eventlake.store import Store
 from eventlake.types import ValidationError
@@ -309,3 +310,26 @@ def test_run_collector_ingests_historical_markets() -> None:
     assert result.status == "ok", result.error
     assert result.rows_written > 0
     assert "KXCPI-26JUL-T-0.4" in store.as_of(now).series_ids("kalshi")
+
+
+def _no_sleep_http() -> HttpClient:
+    return HttpClient(BASE, sleep=lambda _s: None)
+
+
+@responses.activate
+def test_recent_window_lists_live_markets_when_the_cutoff_endpoint_fails() -> None:
+    responses.add(responses.GET, f"{BASE}/historical/cutoff", status=500)
+    responses.add(responses.GET, f"{BASE}/markets", json=_load("markets_kxfeddecision.json"))
+    collector = KalshiCollector(
+        series=["KXFEDDECISION"], http=_no_sleep_http(), clock=lambda: FETCHED
+    )
+    assert len(collector.list_markets(START, END)) == 3
+
+
+@responses.activate
+def test_window_that_may_need_history_fails_loudly_when_the_cutoff_endpoint_fails() -> None:
+    responses.add(responses.GET, f"{BASE}/historical/cutoff", status=500)
+    responses.add(responses.GET, f"{BASE}/markets", json={"markets": []})
+    collector = KalshiCollector(series=["KXCPI"], http=_no_sleep_http(), clock=lambda: FETCHED)
+    with pytest.raises(HttpError):
+        collector.list_markets(HIST_START, HIST_END)
