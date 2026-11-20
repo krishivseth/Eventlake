@@ -1,7 +1,9 @@
 """The event panel: per event, what the market said, what options implied, what happened.
 
-Every row is computed from a single ``Snapshot`` at ``as_of``, so a row for a given ``as_of``
-never changes when later data arrives.
+Observation values (prices, implied vols, closes) are read from a single ``Snapshot`` at
+``as_of``, so later observations never change a row. Events and market links are reference data
+and are read as stored: a market appears in a row only if it had a price known at ``as_of``, but
+linking a market later can change which already-priced market a past row shows.
 """
 
 from collections.abc import Sequence
@@ -79,6 +81,21 @@ def _top_market(store: Store, snap: Snapshot, event: Event) -> tuple[Market, flo
     return min(priced, key=lambda mp: (-mp[1], mp[0].market_id))  # ties: lowest market_id
 
 
+def _row_for(store: Store, snap: Snapshot, event: Event) -> PanelRow:
+    top = _top_market(store, snap, event)
+    return PanelRow(
+        event_id=event.event_id,
+        kind=event.kind,
+        scheduled_time=event.scheduled_time,
+        as_of=snap.ts,
+        market_id=top[0].market_id if top else None,
+        market_title=top[0].title if top else None,
+        market_prob=top[1] if top else None,
+        implied_move=implied_event_move(snap, _UNDERLYING, event),
+        realized_move=realized_move(snap, event),
+    )
+
+
 def event_panel(
     store: Store, as_of: datetime, kinds: Sequence[str] = _DEFAULT_KINDS
 ) -> list[PanelRow]:
@@ -87,30 +104,19 @@ def event_panel(
     ``market_*`` describes the linked market with the highest probability in the snapshot.
     A market's probability counts only if its latest observation is at most 7 days older than
     ``as_of``; a market that stopped trading earlier is unknown, and when no linked market is
-    known the three ``market_*`` fields are ``None``. ``implied_move`` and ``realized_move``
-    come from ``derived`` and are ``None`` when not knowable at ``as_of``.
+    known the three ``market_*`` fields are ``None``.
+    Observation values are point-in-time; the event list and market links are read as stored, so
+    a market linked later can change which priced market a past ``as_of`` row shows.
+    ``implied_move`` and ``realized_move`` come from ``derived`` and are ``None`` when not
+    knowable at ``as_of``.
     """
     as_of = utc(as_of)
     snap = store.as_of(as_of)
-    rows: list[PanelRow] = []
-    for event in stored_events(store, kinds):
-        if event.scheduled_time > as_of + _HORIZON:
-            continue
-        top = _top_market(store, snap, event)
-        rows.append(
-            PanelRow(
-                event_id=event.event_id,
-                kind=event.kind,
-                scheduled_time=event.scheduled_time,
-                as_of=as_of,
-                market_id=top[0].market_id if top else None,
-                market_title=top[0].title if top else None,
-                market_prob=top[1] if top else None,
-                implied_move=implied_event_move(snap, _UNDERLYING, event),
-                realized_move=realized_move(snap, event),
-            )
-        )
-    return rows
+    return [
+        _row_for(store, snap, event)
+        for event in stored_events(store, kinds)
+        if event.scheduled_time <= as_of + _HORIZON
+    ]
 
 
 def eve_panel(
@@ -119,15 +125,17 @@ def eve_panel(
     kinds: Sequence[str] = _DEFAULT_KINDS,
     until: datetime | None = None,
 ) -> list[PanelRow]:
-    """For each event scheduled at or before ``until`` (default now), its row at ``lead`` before."""
+    """For each event scheduled at or before ``until`` (default now), its row at ``lead`` before.
+
+    There is no 30-day horizon here, so any ``lead`` yields a row. Reference-data caveat as in
+    ``event_panel``: observations are point-in-time, links and events are read as stored.
+    """
     limit = utc(until) if until is not None else datetime.now(UTC)
-    out: list[PanelRow] = []
-    for event in stored_events(store, kinds):
-        if event.scheduled_time > limit:
-            continue
-        rows = event_panel(store, event.scheduled_time - lead, kinds)
-        out.extend(r for r in rows if r.event_id == event.event_id)
-    return out
+    return [
+        _row_for(store, store.as_of(event.scheduled_time - lead), event)
+        for event in stored_events(store, kinds)
+        if event.scheduled_time <= limit
+    ]
 
 
 _SCHEMA = pa.schema(

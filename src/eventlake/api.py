@@ -2,7 +2,8 @@
 
 Every endpoint is ``async def`` so FastAPI runs it on the event loop thread. DuckDB
 connections are not safe to share across threads, and one loop thread serialises all store
-access without a lock. Handlers are short, synchronous reads.
+access without a lock. This assumes one thread uses the store (one worker process serving
+this app, no other thread touching the same ``Store``). Handlers are short, synchronous reads.
 """
 
 from dataclasses import asdict
@@ -27,11 +28,16 @@ def _parse_as_of(raw: str | None) -> datetime:
         return datetime.now(UTC)
     try:
         parsed = datetime.fromisoformat(raw)
-    except ValueError:
-        raise HTTPException(422, "as_of must be ISO-8601 with a UTC offset") from None
+    except (ValueError, OverflowError):
+        raise HTTPException(
+            422, "as_of must be ISO-8601 with a UTC offset (encode a + offset as %2B)"
+        ) from None
     if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise HTTPException(422, "as_of must include a UTC offset")
-    return parsed.astimezone(UTC)
+        raise HTTPException(422, "as_of must include a UTC offset (encode a + offset as %2B)")
+    try:
+        return parsed.astimezone(UTC)
+    except OverflowError:
+        raise HTTPException(422, "as_of is out of range") from None
 
 
 def create_app(store: Store) -> FastAPI:

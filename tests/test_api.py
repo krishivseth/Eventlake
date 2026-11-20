@@ -4,24 +4,23 @@ from fastapi.testclient import TestClient
 
 from eventlake.api import create_app
 from eventlake.panel import event_panel
-from panel_helpers import _build, _utc
+from panel_helpers import build_store, utc_at
 
 
-def _client() -> tuple[TestClient, object]:
-    store = _build()
-    return TestClient(create_app(store)), store
+def _client() -> TestClient:
+    return TestClient(create_app(build_store()))
 
 
 def test_health_and_feeds() -> None:
-    client, _ = _client()
+    client = _client()
     assert client.get("/health").json() == {"status": "ok"}
     assert client.get("/feeds").json() == []
 
 
 def test_api_panel_matches_function() -> None:
-    store = _build()
+    store = build_store()
     client = TestClient(create_app(store))
-    as_of = _utc(2026, 1, 27, 19)
+    as_of = utc_at(2026, 1, 27, 19)
     body = client.get("/panel", params={"as_of": as_of.isoformat(), "kinds": "FOMC"}).json()
     rows = event_panel(store, as_of, kinds=("FOMC",))
     assert [b["event_id"] for b in body] == [r.event_id for r in rows]
@@ -32,7 +31,7 @@ def test_api_panel_matches_function() -> None:
 
 
 def test_api_rejects_naive_as_of() -> None:
-    client, _ = _client()
+    client = _client()
     for path in ("/panel", "/observations"):
         extra = {"feed": "fred", "series_id": "SP500"} if path == "/observations" else {}
         r = client.get(path, params={"as_of": "2026-01-27T19:00:00", **extra})
@@ -42,7 +41,7 @@ def test_api_rejects_naive_as_of() -> None:
 
 
 def test_api_observations_respects_as_of() -> None:
-    client, _ = _client()
+    client = _client()
     q = {"feed": "fred", "series_id": "SP500"}
     early = client.get("/observations", params={**q, "as_of": "2026-01-27T12:00:00Z"}).json()
     late = client.get("/observations", params={**q, "as_of": "2026-02-05T00:00:00+00:00"}).json()
@@ -52,7 +51,14 @@ def test_api_observations_respects_as_of() -> None:
 
 
 def test_api_events_filter_by_kind() -> None:
-    client, _ = _client()
+    client = _client()
     body = client.get("/events", params={"kind": "CPI"}).json()
     assert [e["event_id"] for e in body] == ["CPI:2026-02-11"]
     assert len(client.get("/events").json()) == 3
+
+
+def test_api_out_of_range_as_of_is_422_not_500() -> None:
+    r = _client().get("/panel", params={"as_of": "9999-12-31T23:59:59-05:00"})
+    assert r.status_code == 422
+    r = _client().get("/panel", params={"as_of": "2026-01-27T19:00:00 02:00"})
+    assert r.status_code == 422 and "%2B" in r.json()["detail"]
