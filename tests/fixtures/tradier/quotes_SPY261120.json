@@ -1,0 +1,30 @@
+{
+ "quotes": {
+  "quote": [
+   {
+    "symbol": "SPY261120C00600000",
+    "option_type": "call",
+    "strike": 600.0,
+    "bid": 3.1,
+    "ask": 3.3,
+    "last": 3.2,
+    "expiration_date": "2026-11-20",
+    "greeks": {
+     "mid_iv": 0.2
+    }
+   },
+   {
+    "symbol": "SPY261120P00600000",
+    "option_type": "put",
+    "strike": 600.0,
+    "bid": 2.7,
+    "ask": 2.9,
+    "last": 2.8,
+    "expiration_date": "2026-11-20",
+    "greeks": {
+     "mid_iv": 0.22
+    }
+   }
+  ]
+ }
+}

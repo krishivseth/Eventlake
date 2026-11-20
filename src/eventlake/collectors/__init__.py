@@ -8,6 +8,7 @@ from eventlake.collectors.fred import FredCollector
 from eventlake.collectors.kalshi import KalshiCollector
 from eventlake.collectors.noaa import NoaaCollector
 from eventlake.collectors.polymarket import PolymarketCollector
+from eventlake.collectors.tradier import TradierOptionsCollector
 from eventlake.runner import Collector
 
 REGISTRY: dict[str, Callable[[], Collector]] = {
@@ -17,4 +18,5 @@ REGISTRY: dict[str, Callable[[], Collector]] = {
     "kalshi": KalshiCollector,
     "noaa": NoaaCollector,
     "polymarket": PolymarketCollector,
+    "tradier.options": TradierOptionsCollector,
 }
