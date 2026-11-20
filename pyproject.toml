@@ -12,6 +12,7 @@ dependencies = [
     "uvicorn",
     "typer",
     "pyarrow",
+    "pytz>=2026.6",
 ]
 
 [dependency-groups]
