@@ -154,8 +154,6 @@ updated or deleted. Two guarantees are enforced by tests:
 - The event calendar is a hand-maintained set of CSVs covering 2025-2026.
 - DuckDB allows one writer per file. `serve` holds the database open, so stop it before
   running `ingest` or `backfill` against the same file.
-- `serve` binds 127.0.0.1 only, so the API of the provided Docker image is reachable only
-  from inside the container.
 - The Tradier collector is built from the documented API; its test fixtures are hand-built
   from documented response shapes and it has not been run against the live API.
 - Implied-move history needs recorded option data, which is not included; a live store
@@ -177,7 +175,13 @@ uv run eventlake export panel.parquet              # day-before-event panel as P
 uv run eventlake serve --port 8000                 # read-only API: /events /observations /panel /feeds
 ```
 
-`/observations` and `/panel` take `as_of` as ISO-8601 with a UTC offset.
+`serve` binds 127.0.0.1 unless given `--host`. `/observations` and `/panel` take `as_of` as
+ISO-8601 with a UTC offset. The Dockerfile runs `serve --host 0.0.0.0 --port 8000`; the store
+lives at `/app/data/eventlake.duckdb` unless `EVENTLAKE_DB` says otherwise:
+
+```
+docker build -t eventlake . && docker run -p 8000:8000 -v "$PWD/data:/app/data" eventlake
+```
 
 ## Licence
 

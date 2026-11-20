@@ -164,13 +164,18 @@ def export(
 
 
 @app.command()
-def serve(port: Annotated[int, typer.Option(help="TCP port.")] = 8000) -> None:
-    """Serve the read-only HTTP API on 127.0.0.1."""
+def serve(
+    port: Annotated[int, typer.Option(help="TCP port.")] = 8000,
+    host: Annotated[
+        str, typer.Option(help="Interface to bind; 0.0.0.0 exposes the API to the network.")
+    ] = "127.0.0.1",
+) -> None:
+    """Serve the read-only HTTP API (default 127.0.0.1 only)."""
     import uvicorn
 
     from eventlake.api import create_app
 
-    uvicorn.run(create_app(_open_store()), host="127.0.0.1", port=port)
+    uvicorn.run(create_app(_open_store()), host=host, port=port)
 
 
 @app.command()

@@ -157,6 +157,16 @@ def test_serve_starts_uvicorn_on_localhost(db: Path, monkeypatch: pytest.MonkeyP
     assert seen == {"host": "127.0.0.1", "port": 8123}
 
 
+def test_serve_passes_host_option_to_uvicorn(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import uvicorn
+
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(uvicorn, "run", lambda app, **kw: seen.update(kw))
+    result = runner.invoke(cli.app, ["serve", "--host", "0.0.0.0", "--port", "8000"])
+    assert result.exit_code == 0, result.output
+    assert seen == {"host": "0.0.0.0", "port": 8000}
+
+
 def test_parse_when_forms() -> None:
     assert cli.parse_when("2026-03-01") == datetime(2026, 3, 1, tzinfo=UTC)
     assert cli.parse_when("2026-03-01T05:00:00+02:00") == datetime(2026, 3, 1, 3, tzinfo=UTC)
