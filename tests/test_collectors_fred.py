@@ -173,3 +173,17 @@ def test_non_numeric_value_is_validation_error() -> None:
         FredCollector().normalize(
             {"series": "SP500", "date": "2026-01-28", "value": "abc"}, FETCHED
         )
+
+
+@responses.activate
+def test_malformed_row_met_during_fetch_is_quarantined_and_the_run_continues() -> None:
+    text = (FIX / "SP500.csv").read_text().replace("2026-01-27,", "27/01/2026,", 1)
+    responses.add(responses.GET, URL, body=text)
+    store = Store()
+    collector = FredCollector(series={"SP500": FRED_SERIES["SP500"]})
+    result = run_collector(collector, store, START, END, now=lambda: FETCHED)
+    assert (result.status, result.rows_quarantined) == ("partial", 1)
+    (reason,) = store.execute("SELECT reason FROM quarantine")[0]
+    assert "fred: SP500: malformed observation_date" in reason
+    days = [o.event_time.day for o in store.as_of(FETCHED).series("fred", "SP500")]
+    assert 28 in days and 27 not in days

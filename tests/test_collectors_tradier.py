@@ -177,8 +177,42 @@ def test_base_url_comes_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "https://example.test/v1/markets/quotes",
         json={"quotes": None},
     )
-    assert list(_collector().fetch(NOW, NOW)) == []
+    (raw,) = _collector().fetch(NOW, NOW)
     assert len(responses.calls) == 1
+    with pytest.raises(ValidationError, match="no spot quote for SPY"):
+        _collector().normalize(raw, NOW)
+
+
+@responses.activate
+def test_empty_base_env_falls_back_to_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TRADIER_BASE", "")
+    responses.add(responses.GET, f"{BASE}/markets/quotes", json={"quotes": None})
+    list(_collector().fetch(NOW, NOW))
+    assert responses.calls[0].request.url.startswith(f"{BASE}/markets/quotes")
+
+
+@responses.activate
+def test_underlying_without_spot_is_quarantined_and_the_run_is_partial() -> None:
+    _serve()
+    responses.replace(responses.GET, f"{BASE}/markets/quotes", json={"quotes": None})
+    store = Store()
+    result = run_collector(_collector(underlyings=("SPX", "SPY")), store, NOW, NOW,
+                           now=lambda: NOW)  # fmt: skip
+    assert (result.status, result.rows_written, result.rows_quarantined) == ("partial", 0, 2)
+    reasons = sorted(r[0] for r in store.execute("SELECT reason FROM quarantine"))
+    assert "no spot quote for SPX" in reasons[0] and "no spot quote for SPY" in reasons[1]
+
+
+@responses.activate
+def test_malformed_expiration_is_quarantined_and_the_rest_are_stored() -> None:
+    expirations = _load("expirations.json")
+    expirations["expirations"]["date"].insert(0, "soon")
+    _serve(expirations=expirations)
+    store = Store()
+    result = run_collector(_collector(n_expiries=2), store, NOW, NOW, now=lambda: NOW)
+    assert (result.status, result.rows_written, result.rows_quarantined) == ("partial", 2, 1)
+    (reason,) = store.execute("SELECT reason FROM quarantine")[0]
+    assert "tradier.options: SPY: malformed expiration" in reason
 
 
 def test_injected_http_needs_no_token(monkeypatch: pytest.MonkeyPatch) -> None:

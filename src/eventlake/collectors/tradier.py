@@ -6,7 +6,14 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any, Literal
 
 from eventlake.http import HttpClient, RateLimiter
-from eventlake.types import Observation, ValidationError, utc
+from eventlake.types import (
+    Observation,
+    ValidationError,
+    describe,
+    malformed,
+    reject_malformed,
+    utc,
+)
 
 DEFAULT_BASE = "https://sandbox.tradier.com/v1"
 FEED = "tradier.options"
@@ -64,7 +71,7 @@ class TradierOptionsCollector:
             if not token:
                 raise RuntimeError("TRADIER_TOKEN is required to query the Tradier API")
             http = HttpClient(
-                os.environ.get("TRADIER_BASE", DEFAULT_BASE),
+                os.environ.get("TRADIER_BASE") or DEFAULT_BASE,
                 headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
                 limiter=RateLimiter(120, 60.0),
             )
@@ -75,6 +82,8 @@ class TradierOptionsCollector:
 
         The window is ignored, except that nothing is yielded when ``end`` is earlier than the
         current time minus one day, since a past window cannot be answered from live quotes.
+        An underlying with no usable spot quote, an expiration date that cannot be read and an
+        unreadable strike list are each yielded as one malformed record.
         """
         start, end = utc(start), utc(end)
         now = utc(self._clock())
@@ -83,23 +92,37 @@ class TradierOptionsCollector:
         for underlying in self._underlyings:
             spot = self._spot(underlying)
             if spot is None:
+                error = f"no spot quote for {underlying}"
+                yield malformed(underlying, "spot", error, {"underlying": underlying})
                 continue
-            for expiry in self._expiries(underlying, now.date()):
+            expiries, unreadable = self._expiries(underlying, now.date())
+            for text in unreadable:
+                yield malformed(underlying, "expiration", f"not a date: {text!r}", text)
+            for expiry in expiries:
                 yield self._record(underlying, expiry, spot)
 
     def _spot(self, underlying: str) -> float | None:
         for q in _quotes(self._http.get_json("/markets/quotes", {"symbols": underlying})):
-            price = q.get("last") if q.get("last") is not None else q.get("close")
-            if price is not None:
+            price: Any = q.get("last") if q.get("last") is not None else q.get("close")
+            try:
                 return float(price)
+            except (TypeError, ValueError):
+                continue
         return None
 
-    def _expiries(self, underlying: str, today: date) -> list[date]:
+    def _expiries(self, underlying: str, today: date) -> tuple[list[date], list[Any]]:
+        """The next ``n_expiries`` expiration dates, and the entries that are not dates."""
         body = self._http.get_json("/markets/options/expirations", {"symbol": underlying})
         container = body.get("expirations") if isinstance(body, dict) else None
-        dates = _as_list(container.get("date")) if isinstance(container, dict) else []
-        upcoming = sorted(d for d in map(date.fromisoformat, dates) if d >= today)
-        return upcoming[: self._n_expiries]
+        dates: list[date] = []
+        unreadable: list[Any] = []
+        for text in _as_list(container.get("date")) if isinstance(container, dict) else []:
+            try:
+                dates.append(date.fromisoformat(text))
+            except (TypeError, ValueError):
+                unreadable.append(text)
+        upcoming = sorted(d for d in dates if d >= today)
+        return upcoming[: self._n_expiries], unreadable
 
     def _strikes(self, underlying: str, expiry: date) -> list[float]:
         body = self._http.get_json(
@@ -118,7 +141,11 @@ class TradierOptionsCollector:
             "call": None,
             "put": None,
         }
-        strikes = self._strikes(underlying, expiry)
+        try:
+            strikes = self._strikes(underlying, expiry)
+        except (TypeError, ValueError) as exc:
+            series = f"{underlying}:{expiry.isoformat()}:atm_iv"
+            return malformed(series, "strike", describe(exc), record)
         if not strikes:
             return record
         strike = min(strikes, key=lambda s: abs(s - spot))
@@ -137,6 +164,7 @@ class TradierOptionsCollector:
         return record
 
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
+        reject_malformed(FEED, raw)
         series = f"{raw['underlying']}:{raw['expiry']}:atm_iv"
         call, put = raw.get("call"), raw.get("put")
         if not isinstance(call, dict) or not isinstance(put, dict):

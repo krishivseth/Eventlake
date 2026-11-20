@@ -107,3 +107,14 @@ def test_malformed_tmax_is_validation_error() -> None:
     raw = {"DATE": "2026-01-20", "STATION": "USW00094728", "TMAX": "warm"}
     with pytest.raises(ValidationError, match="USW00094728"):
         NoaaCollector().normalize(raw, FETCHED)
+
+
+@responses.activate
+def test_malformed_row_is_quarantined_and_later_rows_are_stored() -> None:
+    rows = _rows()
+    rows[0]["TMAX"] = "warm"
+    responses.add(responses.GET, URL, json=rows)
+    store = Store()
+    result = run_collector(NoaaCollector(), store, START, END, now=lambda: FETCHED)
+    assert (result.status, result.rows_quarantined) == ("partial", 1)
+    assert result.rows_written == len(rows) - 1

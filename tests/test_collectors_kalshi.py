@@ -333,3 +333,30 @@ def test_window_that_may_need_history_fails_loudly_when_the_cutoff_endpoint_fail
     collector = KalshiCollector(series=["KXCPI"], http=_no_sleep_http(), clock=lambda: FETCHED)
     with pytest.raises(HttpError):
         collector.list_markets(HIST_START, HIST_END)
+
+
+@responses.activate
+def test_malformed_market_met_during_fetch_is_quarantined_and_the_run_continues() -> None:
+    _cutoff()
+    page = _fed_page_with_open_time("KXFEDDECISION-26OCT-H26", "yesterday")
+    del page["markets"][1]["ticker"]
+    responses.add(responses.GET, f"{BASE}/markets", json=page)
+    responses.add(responses.GET, CANDLES, json=_load("candlesticks_h0.json"))
+    store = Store()
+    collector = KalshiCollector(series=["KXFEDDECISION"])
+    result = run_collector(collector, store, START, END, now=lambda: FETCHED)
+    assert (result.status, result.rows_quarantined) == ("partial", 2)
+    assert result.rows_written > 0  # the third market's candles are stored
+    reasons = sorted(r[0] for r in store.execute("SELECT reason FROM quarantine"))
+    assert "kalshi: KXFEDDECISION-26OCT-H26: malformed open_time" in reasons[0]
+    assert "kalshi: KXFEDDECISION: malformed ticker" in reasons[1]
+
+
+def test_null_price_is_validation_error_naming_the_field() -> None:
+    raw = {
+        "series": "KXFEDDECISION",
+        "ticker": "KXFEDDECISION-26OCT-H0",
+        "candle": {"end_period_ts": 1792468800, "price": None},
+    }
+    with pytest.raises(ValidationError, match="kalshi: KXFEDDECISION-26OCT-H0: malformed price"):
+        KalshiCollector().normalize(raw, FETCHED)

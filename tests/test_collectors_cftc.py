@@ -59,7 +59,7 @@ def test_fetch_filters_to_contract_and_window() -> None:
 def test_kt_quality_is_declared() -> None:
     raw = _rows()[1]
     obs = CftcCollector().normalize(raw, FETCHED)
-    assert {o.kt_quality for o in obs} == {"source"}
+    assert {o.kt_quality for o in obs} == {"assumed"}
     assert {o.feed for o in obs} == {"cftc"}
 
 
@@ -113,6 +113,17 @@ def test_malformed_field_is_validation_error() -> None:
     missing = {k: v for k, v in _rows()[1].items() if k != "lev_money_positions_short"}
     with pytest.raises(ValidationError, match="lev_money_positions_short"):
         CftcCollector().normalize(missing, FETCHED)
+
+
+@responses.activate
+def test_malformed_row_is_quarantined_and_later_rows_are_stored() -> None:
+    rows = _rows()
+    rows[0]["report_date_as_yyyy_mm_dd"] = "last week"
+    responses.add(responses.GET, URL, json=rows)
+    store = Store()
+    result = run_collector(CftcCollector(), store, START, END, now=lambda: FETCHED)
+    assert (result.status, result.rows_quarantined, result.rows_written) == ("partial", 1, 8)
+    assert len(store.as_of(FETCHED).series("cftc", SERIES)) == 2
 
 
 def test_monday_as_of_maps_to_friday() -> None:

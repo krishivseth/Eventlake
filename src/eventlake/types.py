@@ -48,3 +48,26 @@ class Observation:
             raise ValidationError("value must be finite")
         if self.knowledge_time < self.event_time:
             raise ValidationError("knowledge_time must not precede event_time")
+
+
+MALFORMED = "_malformed"
+
+
+def malformed(series: str, field: str, error: str, entry: Any) -> dict[str, Any]:
+    """A raw record standing for a vendor entry that ``fetch`` could not parse.
+
+    ``fetch`` yields it in place of the entry so the run continues; the collector's
+    ``normalize`` passes it to ``reject_malformed``, and the runner quarantines it.
+    """
+    return {MALFORMED: {"series": series, "field": field, "error": error}, "entry": entry}
+
+
+def reject_malformed(feed: str, raw: Any) -> None:
+    """Raise ``ValidationError`` naming the feed, series and field if ``raw`` is malformed."""
+    tag = raw.get(MALFORMED) if isinstance(raw, dict) else None
+    if isinstance(tag, dict):
+        raise ValidationError(f"{feed}: {tag['series']}: malformed {tag['field']} ({tag['error']})")
+
+
+def describe(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"

@@ -78,7 +78,7 @@ class CftcCollector:
                 event_time=event,
                 knowledge_time=known,
                 value=value,
-                kt_quality="source",
+                kt_quality="assumed",  # a computed schedule, not a published timestamp
                 attrs={"contract": str(raw.get("contract_market_name", ""))},
             )
             for name, value in values.items()

@@ -164,3 +164,21 @@ def test_list_markets_skips_malformed_market() -> None:
 def test_registered_and_default_tags() -> None:
     assert isinstance(REGISTRY["polymarket"](), PolymarketCollector)
     assert "fed" in POLYMARKET_TAGS
+
+
+@responses.activate
+def test_malformed_point_met_during_fetch_is_quarantined_and_the_run_continues() -> None:
+    _register_events()
+    history = json.loads((FIX / "prices_history.json").read_text())
+    history["history"][0]["t"] = "noon"
+    responses.add(responses.GET, re.compile(re.escape(CLOB)), json=history)
+    store = Store()
+    collector = PolymarketCollector(tag_slugs=["fed"])
+    result = run_collector(collector, store, LIFE_START, END, now=lambda: FETCHED)
+    assert result.status == "partial", result.error
+    assert result.rows_quarantined == 7  # the bad first point, once per market
+    reason = store.execute("SELECT reason FROM quarantine")[0][0]
+    assert "polymarket: " in reason and "malformed t" in reason
+    token = json.loads(_events()[0]["markets"][0]["clobTokenIds"])[0]
+    stored = store.as_of(FETCHED).series("polymarket", token)
+    assert len(stored) == len(history["history"]) - 1

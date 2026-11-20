@@ -6,7 +6,15 @@ from typing import Any
 
 from eventlake.entities import Market
 from eventlake.http import HttpClient, HttpError, RateLimiter
-from eventlake.types import Observation, ValidationError, parse_utc, utc
+from eventlake.types import (
+    Observation,
+    ValidationError,
+    describe,
+    malformed,
+    parse_utc,
+    reject_malformed,
+    utc,
+)
 
 BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
 FEED = "kalshi"
@@ -116,15 +124,26 @@ class KalshiCollector:
         return out
 
     def fetch(self, start: datetime, end: datetime) -> Iterator[Any]:
-        """One record per daily candle of every market whose life overlaps the window."""
+        """One record per daily candle of every market whose life overlaps the window.
+
+        A market whose ticker or open time cannot be read is yielded as one malformed record.
+        """
         start, end = utc(start), utc(end)
         for series in self._series:
             for raw, live in self.iter_markets(series, start):
-                opened = parse_utc(raw["open_time"]) if raw.get("open_time") else start
+                ticker = raw.get("ticker")
+                if ticker is None or str(ticker) == "":
+                    yield malformed(series, "ticker", f"missing: {ticker!r}", raw)
+                    continue
+                try:
+                    opened = parse_utc(raw["open_time"]) if raw.get("open_time") else start
+                except (TypeError, ValueError) as exc:
+                    yield malformed(str(ticker), "open_time", describe(exc), raw)
+                    continue
                 if opened > end:
                     continue
                 for candle in self.candles(series, raw, live, max(start, opened), end):
-                    yield {"series": series, "ticker": raw["ticker"], "candle": candle}
+                    yield {"series": series, "ticker": ticker, "candle": candle}
 
     def candles(
         self, series: str, raw: dict[str, Any], live: bool, start: datetime, end: datetime
@@ -148,8 +167,11 @@ class KalshiCollector:
         return found
 
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
+        reject_malformed(FEED, raw)
         candle = raw["candle"]
         price = candle["price"]
+        if not isinstance(price, dict):
+            raise ValidationError(f"{FEED}: {raw['ticker']}: malformed price ({price!r})")
         # Markets settled before the historical cutoff report ``close``, not ``close_dollars``.
         close = price.get("close_dollars", price.get("close"))
         if close is None:

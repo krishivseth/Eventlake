@@ -125,7 +125,7 @@ updated or deleted. Two guarantees are enforced by tests:
 | `tradier.options` | Tradier quotes with greeks, ATM call and put per expiry | `TRADIER_TOKEN` | fetch time | `observed` |
 | `fred` | FRED keyless CSV: SP500, DFF, CPIAUCSL | none | SP500, DFF: observation date + 1 day + lag (0, 1 day). CPIAUCSL: the first CPI release in the packaged calendar after the reference month ends; outside the calendar, month end + 45 days. Values are today's vintage, not first release | `assumed`; CPIAUCSL `source` (fallback `assumed`) |
 | `noaa` | NCEI Access Data Service, daily TMAX, Central Park | none | observation date + 36 hours | `assumed` |
-| `cftc` | CFTC Socrata, Traders in Financial Futures, E-mini S&P 500 | none | first Friday at least 3 days after the report date, 15:30 New York | `source` |
+| `cftc` | CFTC Socrata, Traders in Financial Futures, E-mini S&P 500 | none | first Friday at least 3 days after the report date, 15:30 New York | `assumed` |
 | `edgar` | SEC submissions JSON, Form 4 count per filing day | `EVENTLAKE_CONTACT` (User-Agent) | latest acceptance time that day | `source` |
 
 ## Design decisions
@@ -142,7 +142,7 @@ updated or deleted. Two guarantees are enforced by tests:
 
 ## Limitations
 
-- FRED daily series and NOAA knowledge times are assumed from a fixed lag.
+- FRED daily series, NOAA and CFTC knowledge times are assumed from a fixed rule.
 - The keyless FRED CSV serves today's values, not first-release values. CPIAUCSL is seasonally
   adjusted and revised, so a backfill stamps the currently revised number with the original
   release time: the timestamp is right, but the value can differ from what was published that
@@ -151,7 +151,7 @@ updated or deleted. Two guarantees are enforced by tests:
 - CPIAUCSL is matched to the calendar on the assumption of one CPI release per reference
   month. The one exception in the calendar is October 2025, whose release was cancelled; it
   would be dated at the next release (2025-12-18), but FRED has no value for that month.
-- CFTC knowledge time does not model releases delayed by holidays.
+- The CFTC rule (Friday 15:30 New York) does not model releases delayed by holidays.
 - Events and market-to-event links are reference data read as currently stored. A market
   linked later can change which already-priced market a past panel row shows (only to one
   priced at that as-of time; `test_late_link_can_only_surface_prices_already_known`).

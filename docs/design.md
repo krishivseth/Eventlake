@@ -62,6 +62,10 @@ Parquet export are built the same way: `event_panel` reads one snapshot at its `
    `fetch` yields raw vendor records for the window; `normalize` turns one record into
    observations and raises `ValidationError` (or `KeyError`, `TypeError`, `ValueError`) for a
    bad record, which the runner quarantines.
+   `fetch` must not raise on one bad vendor entry: if it has to parse a field (to filter the
+   window, say) and cannot, it yields `types.malformed(series, field, error, entry)` in the
+   entry's place, and `normalize` begins with `types.reject_malformed(feed, raw)`, so the entry
+   is quarantined with a reason naming the feed, series and field while the run continues.
 2. A knowledge-time rule with an honest `kt_quality`: `source` when the vendor or its published
    schedule gives the time, `observed` for the fetch time, `assumed` for a fixed lag.
    `normalize` drops rows whose knowledge time is after `fetched_at`.

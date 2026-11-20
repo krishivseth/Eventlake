@@ -15,7 +15,15 @@ from typing import Any
 
 from eventlake.calendar import Event, EventKind, load_events
 from eventlake.http import HttpClient, RateLimiter
-from eventlake.types import KtQuality, Observation, ValidationError, utc
+from eventlake.types import (
+    KtQuality,
+    Observation,
+    ValidationError,
+    describe,
+    malformed,
+    reject_malformed,
+    utc,
+)
 
 BASE_URL = "https://fred.stlouisfed.org"
 FEED = "fred"
@@ -94,16 +102,28 @@ class FredCollector:
         self._http = http if http is not None else HttpClient(BASE_URL, limiter=RateLimiter(2, 1.0))
 
     def fetch(self, start: datetime, end: datetime) -> Iterator[Any]:
-        """One record per CSV row dated inside ``[start, end]``; the endpoint returns it all."""
+        """One record per CSV row dated inside ``[start, end]``; the endpoint returns it all.
+
+        A row whose date cannot be read is yielded as a malformed record.
+        """
         first, last = utc(start).date(), utc(end).date()
         for series in self._series:
             text = self._http.get_text("/graph/fredgraph.csv", {"id": series})
             for row in csv.DictReader(io.StringIO(text)):
-                day = date.fromisoformat(row["observation_date"])
+                try:
+                    day = date.fromisoformat(row["observation_date"])
+                except (KeyError, TypeError, ValueError) as exc:
+                    yield malformed(series, "observation_date", describe(exc), row)
+                    continue
                 if first <= day <= last:
-                    yield {"series": series, "date": row["observation_date"], "value": row[series]}
+                    yield {
+                        "series": series,
+                        "date": row["observation_date"],
+                        "value": row.get(series),
+                    }
 
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
+        reject_malformed(FEED, raw)
         series = str(raw["series"])
         text = str(raw["value"]).strip()
         if text in MISSING:

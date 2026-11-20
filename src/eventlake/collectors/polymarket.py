@@ -2,12 +2,21 @@
 
 import json
 from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
 from eventlake.entities import Market
 from eventlake.http import HttpClient, RateLimiter
-from eventlake.types import Observation, ValidationError, parse_utc, utc
+from eventlake.types import (
+    Observation,
+    ValidationError,
+    describe,
+    malformed,
+    parse_utc,
+    reject_malformed,
+    utc,
+)
 
 FEED = "polymarket"
 GAMMA_EVENTS = "https://gamma-api.polymarket.com/events"
@@ -41,13 +50,13 @@ def _yes_token(market: dict[str, Any]) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
 class _Listing:
     """A market together with the facts needed to fetch its history."""
 
-    def __init__(self, market: Market, yes_token: str, opened: datetime | None) -> None:
-        self.market = market
-        self.yes_token = yes_token
-        self.opened = opened
+    market: Market
+    yes_token: str
+    opened: datetime | None
 
 
 def _listing(event: dict[str, Any], raw: dict[str, Any]) -> _Listing | None:
@@ -131,7 +140,10 @@ class PolymarketCollector:
         return [found.market for found in self._listings(utc(start), utc(end))]
 
     def fetch(self, start: datetime, end: datetime) -> Iterator[Any]:
-        """One record per daily point of every market whose life overlaps the window."""
+        """One record per daily point of every market whose life overlaps the window.
+
+        A point whose timestamp cannot be read is yielded as a malformed record.
+        """
         start, end = utc(start), utc(end)
         for found in self._listings(start, None):
             if found.opened is not None and found.opened > end:
@@ -141,11 +153,16 @@ class PolymarketCollector:
                 {"market": found.yes_token, "interval": "max", "fidelity": DAY_FIDELITY},
             )
             for point in body.get("history", []):
-                at = datetime.fromtimestamp(int(point["t"]), UTC)
+                try:
+                    at = datetime.fromtimestamp(int(point["t"]), UTC)
+                except (KeyError, TypeError, ValueError, OverflowError, OSError) as exc:
+                    yield malformed(found.yes_token, "t", describe(exc), point)
+                    continue
                 if start <= at <= end:
                     yield {"token_id": found.yes_token, "point": point}
 
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
+        reject_malformed(FEED, raw)
         point = raw["point"]
         probability = float(point["p"])
         if not 0.0 <= probability <= 1.0:

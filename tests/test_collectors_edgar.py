@@ -34,6 +34,25 @@ def _normalize_all(c: EdgarCollector) -> list[Any]:
     return [o for r in c.fetch(START, END) for o in c.normalize(r, FETCHED)]
 
 
+class _Http:
+    """Serves one submissions body whose ``filings.recent`` table is ``recent``."""
+
+    def __init__(self, recent: dict[str, Any]) -> None:
+        self.recent = recent
+
+    def get_json(self, path: str, params: Any = None) -> Any:
+        return {"filings": {"recent": self.recent}}
+
+
+def _collector(recent: dict[str, Any]) -> EdgarCollector:
+    return EdgarCollector(http=_Http(recent))  # type: ignore[arg-type]
+
+
+def _normalize(recent: dict[str, Any], fetched: datetime = FETCHED) -> list[Any]:
+    c = _collector(recent)
+    return [o for r in c.fetch(START, END) for o in c.normalize(r, fetched)]
+
+
 def test_edgar_requires_contact(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("EVENTLAKE_CONTACT")
     with pytest.raises(RuntimeError, match="EVENTLAKE_CONTACT is required"):
@@ -71,8 +90,7 @@ def test_normalize_fixture_values() -> None:
 
 
 def test_kt_quality_is_declared() -> None:
-    raw = {"cik": "0000320193", "start": START, "end": END, "recent": _body()["filings"]["recent"]}
-    obs = EdgarCollector().normalize(raw, FETCHED)
+    obs = _normalize(_body()["filings"]["recent"])
     assert {o.kt_quality for o in obs} == {"source"}
     assert {o.feed for o in obs} == {"edgar"}
 
@@ -88,8 +106,7 @@ def test_edgar_counts_form4_per_day() -> None:
             "2026-11-06T10:00:00.000Z",
         ],
     }
-    raw = {"cik": "0000320193", "start": START, "end": END, "recent": recent}
-    (obs,) = EdgarCollector().normalize(raw, FETCHED)
+    (obs,) = _normalize(recent)
     assert obs.value == 2.0
     assert obs.knowledge_time == datetime(2026, 11, 5, 21, 15, tzinfo=UTC)
 
@@ -100,14 +117,12 @@ def test_acceptance_before_filing_date_is_clamped_to_event_time() -> None:
         "form": ["4"],
         "acceptanceDateTime": ["2026-11-05T23:30:00.000Z"],
     }
-    raw = {"cik": "0000320193", "start": START, "end": END, "recent": recent}
-    (obs,) = EdgarCollector().normalize(raw, FETCHED)
+    (obs,) = _normalize(recent)
     assert obs.knowledge_time == obs.event_time == datetime(2026, 11, 6, tzinfo=UTC)
 
 
 def test_not_yet_accepted_day_is_dropped() -> None:
-    raw = {"cik": "0000320193", "start": START, "end": END, "recent": _body()["filings"]["recent"]}
-    obs = EdgarCollector().normalize(raw, datetime(2026, 11, 12, 23, 0, tzinfo=UTC))
+    obs = _normalize(_body()["filings"]["recent"], datetime(2026, 11, 12, 23, 0, tzinfo=UTC))
     assert [o.event_time.day for o in obs] == [5]
 
 
@@ -142,9 +157,44 @@ def test_run_collector_end_to_end() -> None:
 
 def test_malformed_acceptance_time_is_validation_error() -> None:
     recent = {"filingDate": ["2026-11-05"], "form": ["4"], "acceptanceDateTime": ["soon"]}
-    raw = {"cik": "0000320193", "start": START, "end": END, "recent": recent}
-    with pytest.raises(ValidationError, match="0000320193"):
-        EdgarCollector().normalize(raw, FETCHED)
+    c = _collector(recent)
+    (raw,) = c.fetch(START, END)
+    with pytest.raises(ValidationError, match="edgar: 0000320193: malformed acceptanceDateTime"):
+        c.normalize(raw, FETCHED)
     del recent["form"]
+    (raw,) = c.fetch(START, END)
     with pytest.raises(ValidationError, match="form"):
-        EdgarCollector().normalize(raw, FETCHED)
+        c.normalize(raw, FETCHED)
+
+
+def test_malformed_row_rejects_only_its_filing_date() -> None:
+    recent = {
+        "filingDate": ["2026-11-05", "2026-11-05", "2026-11-0x", "2026-11-12"],
+        "form": ["4", "4", "4", "4"],
+        "acceptanceDateTime": [
+            "2026-11-05T14:00:00.000Z",
+            "later",
+            "2026-11-06T10:00:00.000Z",
+            "2026-11-12T23:58:20.000Z",
+        ],
+    }
+    store = Store()
+    result = run_collector(_collector(recent), store, START, END, now=lambda: FETCHED)
+    assert (result.status, result.rows_quarantined, result.rows_written) == ("partial", 2, 1)
+    reasons = sorted(r[0] for r in store.execute("SELECT reason FROM quarantine"))
+    assert "malformed acceptanceDateTime on 2026-11-05" in reasons[0]
+    assert "malformed filingDate" in reasons[1]
+    (obs,) = store.as_of(FETCHED).series("edgar", SERIES)
+    assert obs.event_time == datetime(2026, 11, 12, tzinfo=UTC)
+
+
+def test_acceptance_time_is_utc() -> None:
+    # The JSON stamps 2026-11-19T23:30:21.000Z for accession 0001140361-26-044952; its EDGAR
+    # index page shows "Accepted 2026-11-19 18:30:21" in New York time (EST, UTC-5).
+    recent = {
+        "filingDate": ["2026-11-19"],
+        "form": ["4"],
+        "acceptanceDateTime": ["2026-11-19T23:30:21.000Z"],
+    }
+    (obs,) = _normalize(recent)
+    assert obs.knowledge_time == datetime(2026, 11, 19, 23, 30, 21, tzinfo=UTC)
