@@ -69,6 +69,21 @@ def test_honours_retry_after() -> None:
     assert sleeps == [7.0]
 
 
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [("-3", 1.0), ("nan", 1.0), ("inf", 1.0), ("soon", 1.0), ("600", 60.0), ("0", 0.0)],
+)
+@responses.activate
+def test_retry_after_must_be_finite_non_negative_and_is_capped(
+    header: str, expected: float
+) -> None:
+    responses.add(responses.GET, URL, status=429, headers={"Retry-After": header})
+    responses.add(responses.GET, URL, json={"ok": 1}, status=200)
+    sleeps: list[float] = []
+    assert make_client(sleeps).get_json("/thing") == {"ok": 1}
+    assert sleeps == [expected]
+
+
 @responses.activate
 def test_retries_500_then_raises() -> None:
     for _ in range(3):
@@ -119,7 +134,7 @@ def test_get_text_params_and_default_user_agent() -> None:
     assert make_client([]).get_text("/thing", {"a": "1"}) == "hello"
     req = responses.calls[0].request
     assert req.url == f"{URL}?a=1"
-    assert req.headers["User-Agent"] == "eventlake/0.1 (+https://github.com)"
+    assert req.headers["User-Agent"] == "eventlake/0.1"
 
 
 @responses.activate

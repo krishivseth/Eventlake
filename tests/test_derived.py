@@ -5,8 +5,8 @@ import pytest
 
 from eventlake.calendar import Event
 from eventlake.derived import (
+    _expiry_close,
     implied_event_move,
-    iv_from_atm_straddle,
     realized_move,
     solve_event_move,
 )
@@ -86,23 +86,9 @@ def test_solver_rejects_bad_times(ft: float, bt: float) -> None:
         solve_event_move(0.2, 0.2, ft, bt)
 
 
-def test_straddle_inversion_roundtrip() -> None:
-    from statistics import NormalDist
-
-    sigma, t, spot = 0.2, 10 / 365, 600.0
-    price = 2 * spot * (2 * NormalDist().cdf(sigma * math.sqrt(t) / 2) - 1)
-    assert iv_from_atm_straddle(price, spot, t) == pytest.approx(sigma, abs=1e-9)
-
-
-@pytest.mark.parametrize(
-    ("straddle", "spot", "t"),
-    [(0.0, 600.0, 0.1), (5.0, 0.0, 0.1), (5.0, 600.0, 0.0), (2000.0, 600.0, 0.1)],
-)
-def test_straddle_inversion_rejects_impossible_inputs(
-    straddle: float, spot: float, t: float
-) -> None:
-    with pytest.raises(ValueError):
-        iv_from_atm_straddle(straddle, spot, t)
+def test_expiry_close_is_1600_new_york() -> None:
+    assert _expiry_close(date(2026, 1, 30)) == datetime(2026, 1, 30, 21, 0, tzinfo=UTC)  # EST
+    assert _expiry_close(date(2026, 7, 17)) == datetime(2026, 7, 17, 20, 0, tzinfo=UTC)  # EDT
 
 
 def test_implied_move_recovers_planted_move() -> None:

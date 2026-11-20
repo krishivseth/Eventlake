@@ -10,7 +10,7 @@ close is after the event, and the Friday one week later. The implied vol of an e
 total-variance formula the solver inverts,
 
     iv = sqrt((diffuse**2 * T + event_move**2) / T),   T = years from the observation to the
-                                                        expiry close, ACT/365,
+                                                        expiry close (16:00 New York), ACT/365,
 
 with a diffuse vol of 13-16 % and an event move of 0.6-0.9 % chosen from the event's position
 in the list below. The numbers are invented; they only exercise the implied-move column.
@@ -21,11 +21,13 @@ import json
 import math
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from eventlake.calendar import load_events
 
 HERE = Path(__file__).resolve().parent
 EVENT_MOVE = {"FOMC": 0.008, "CPI": 0.006}
+NEW_YORK = ZoneInfo("America/New_York")
 
 
 def next_friday(day: date) -> date:
@@ -49,7 +51,7 @@ def main() -> None:
         at = observation_time(event.scheduled_time.date())
         front = next_friday(event.scheduled_time.date())
         for expiry in (front, front + timedelta(days=7)):
-            close = datetime.combine(expiry, time(21, 0), tzinfo=UTC)
+            close = datetime.combine(expiry, time(16, 0), tzinfo=NEW_YORK).astimezone(UTC)
             t = (close - at).total_seconds() / (365 * 86400)
             iv = math.sqrt((diffuse**2 * t + move**2) / t)
             rows.append(

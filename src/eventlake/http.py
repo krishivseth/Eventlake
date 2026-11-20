@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -9,7 +10,8 @@ from typing import Any
 
 import requests
 
-DEFAULT_USER_AGENT = "eventlake/0.1 (+https://github.com)"
+DEFAULT_USER_AGENT = "eventlake/0.1"
+MAX_RETRY_AFTER_S = 60.0
 
 
 class RateLimiter:
@@ -56,6 +58,17 @@ class HttpError(RuntimeError):
         super().__init__(message)
         self.status = status
         self.url = url
+
+
+def _retry_after(header: str | None, default: float) -> float:
+    """Seconds from a numeric ``Retry-After``, capped at 60; ``default`` unless finite and >= 0."""
+    try:
+        seconds = float(header) if header is not None else math.nan
+    except ValueError:
+        return default
+    if not math.isfinite(seconds) or seconds < 0:
+        return default
+    return min(seconds, MAX_RETRY_AFTER_S)
 
 
 def _is_retryable_status(status: int) -> bool:
@@ -109,10 +122,7 @@ class HttpClient:
                 if not _is_retryable_status(resp.status_code):
                     raise HttpError(last_msg, status=last_status, url=url)
                 if resp.status_code == 429:
-                    try:
-                        wait = float(resp.headers["Retry-After"])
-                    except (KeyError, ValueError):
-                        pass
+                    wait = _retry_after(resp.headers.get("Retry-After"), wait)
             if attempt < self._retries - 1:
                 self._sleep(wait)
         raise HttpError(f"{last_msg} after {self._retries} attempts", status=last_status, url=url)

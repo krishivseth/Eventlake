@@ -38,10 +38,6 @@ def _quotes(body: Any) -> list[dict[str, Any]]:
     return [q for q in _as_list(container.get("quote")) if isinstance(q, dict)]
 
 
-def _mid(quote: dict[str, Any]) -> float:
-    return (float(quote["bid"]) + float(quote["ask"])) / 2
-
-
 def _mid_iv(quote: dict[str, Any]) -> float | None:
     greeks = quote.get("greeks")
     iv = greeks.get("mid_iv") if isinstance(greeks, dict) else None
@@ -172,10 +168,6 @@ class TradierOptionsCollector:
         call_iv, put_iv = _mid_iv(call), _mid_iv(put)
         if call_iv is None or put_iv is None:
             raise ValidationError(f"{series}: mid_iv missing or not positive")
-        try:
-            straddle = _mid(call) + _mid(put)
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValidationError(f"{series}: bid/ask missing") from exc
         at = utc(fetched_at)
         return [
             Observation(
@@ -185,10 +177,6 @@ class TradierOptionsCollector:
                 knowledge_time=at,
                 value=(call_iv + put_iv) / 2,
                 kt_quality="observed",
-                attrs={
-                    "spot": float(raw["spot"]),
-                    "strike": float(raw["strike"]),
-                    "straddle_mid": straddle,
-                },
+                attrs={"spot": float(raw["spot"]), "strike": float(raw["strike"])},
             )
         ]

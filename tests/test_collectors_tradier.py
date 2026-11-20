@@ -82,12 +82,10 @@ def test_tradier_normalize_fixture() -> None:
     assert obs.event_time == obs.knowledge_time == NOW
     assert obs.kt_quality == "observed"
     assert obs.attrs["spot"] == 600.4
-    assert obs.attrs["strike"] == 600.0
-    assert obs.attrs["straddle_mid"] == pytest.approx(6.0)
+    assert obs.attrs == {"spot": 600.4, "strike": 600.0}
     second = snap.latest(FEED, "SPY:2026-11-23:atm_iv")
     assert second is not None
     assert second.value == pytest.approx(0.18)
-    assert second.attrs["straddle_mid"] == pytest.approx(8.6)
     auth = responses.calls[0].request.headers["Authorization"]
     assert auth == "Bearer test-token"
 

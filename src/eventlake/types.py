@@ -44,6 +44,7 @@ class Observation:
             dt: datetime = getattr(self, name)
             if dt.tzinfo is None or dt.utcoffset() is None:
                 raise ValidationError(f"{name} must be timezone-aware")
+            object.__setattr__(self, name, dt.astimezone(UTC))
         if not math.isfinite(self.value):
             raise ValidationError("value must be finite")
         if self.knowledge_time < self.event_time:

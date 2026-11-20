@@ -6,7 +6,6 @@ can use information that was not yet knowable at ``snap.ts``. They return number
 
 import math
 from datetime import UTC, date, datetime, time, timedelta
-from statistics import NormalDist
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -46,18 +45,9 @@ def solve_event_move(
     return diffuse, math.sqrt(move_sq), "ok"
 
 
-def iv_from_atm_straddle(straddle: float, spot: float, t_years: float) -> float:
-    """Invert ``straddle = 2 S (2 Phi(sigma sqrt(T) / 2) - 1)`` for ``sigma``."""
-    if spot <= 0 or t_years <= 0 or straddle <= 0:
-        raise ValueError("straddle, spot and t_years must be positive")
-    p = straddle / (4 * spot) + 0.5
-    if p >= 1.0:
-        raise ValueError("straddle price is not attainable for any volatility")
-    return 2 * NormalDist().inv_cdf(p) / math.sqrt(t_years)
-
-
 def _expiry_close(expiry: date) -> datetime:
-    return datetime.combine(expiry, time(21, 0), tzinfo=UTC)
+    """The 16:00 New York close on the expiry date, in UTC."""
+    return datetime.combine(expiry, time(16, 0), tzinfo=_NY).astimezone(UTC)
 
 
 def implied_event_move(snap: Snapshot, underlying: str, event: Event) -> float | None:

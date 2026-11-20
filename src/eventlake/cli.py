@@ -24,7 +24,6 @@ app = typer.Typer(
 )
 
 DEFAULT_DB = "data/eventlake.duckdb"
-_UNKNOWN = "-"
 
 
 def _now() -> datetime:

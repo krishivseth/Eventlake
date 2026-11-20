@@ -1,5 +1,6 @@
 import math
 from datetime import UTC, date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 from eventlake.calendar import Event, upsert_events
 from eventlake.entities import Market, upsert_markets
@@ -10,6 +11,7 @@ FOMC1 = Event("FOMC:2026-01-28", "FOMC", datetime(2026, 1, 28, 19, 0, tzinfo=UTC
 FOMC2 = Event("FOMC:2026-03-18", "FOMC", datetime(2026, 3, 18, 18, 0, tzinfo=UTC), {})
 CPI = Event("CPI:2026-02-11", "CPI", datetime(2026, 2, 11, 13, 30, tzinfo=UTC), {})
 DIFFUSE, MOVE = 0.15, 0.012
+NY = ZoneInfo("America/New_York")
 
 
 def utc_at(y: int, m: int, d: int, h: int = 0) -> datetime:
@@ -17,7 +19,7 @@ def utc_at(y: int, m: int, d: int, h: int = 0) -> datetime:
 
 
 def iv(expiry: date, at: datetime) -> float:
-    close = datetime.combine(expiry, time(21, 0), tzinfo=UTC)
+    close = datetime.combine(expiry, time(16, 0), tzinfo=NY).astimezone(UTC)
     t = (close - at).total_seconds() / (365 * 86400)
     return math.sqrt((DIFFUSE**2 * t + MOVE**2) / t)
 

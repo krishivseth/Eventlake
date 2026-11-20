@@ -59,3 +59,10 @@ def test_parse_utc_accepts_offset() -> None:
 def test_parse_utc_rejects_naive_string() -> None:
     with pytest.raises(ValueError):
         parse_utc("2026-01-28T19:00:00")
+
+
+def test_observation_times_are_normalised_to_utc() -> None:
+    est = timezone(timedelta(hours=-5))
+    o = Observation("f", "s", T0.astimezone(est), (T0 + timedelta(hours=1)).astimezone(est), 1.0)
+    assert o.event_time == T0 and o.event_time.tzinfo is UTC
+    assert o.knowledge_time.tzinfo is UTC
