@@ -12,6 +12,7 @@ from eventlake import cli
 from eventlake.health import POLICIES
 from eventlake.runner import RunResult
 from eventlake.store import Store
+from eventlake.tables import format_table
 from eventlake.types import Observation
 
 runner = CliRunner()
@@ -163,7 +164,7 @@ def test_parse_when_forms() -> None:
 
 
 def test_format_table_aligns_columns() -> None:
-    text = cli.format_table(["a", "bbb"], [["xxxx", "1"], ["y", "22"]])
+    text = format_table(["a", "bbb"], [["xxxx", "1"], ["y", "22"]])
     assert text.splitlines() == ["a     bbb", "----  ---", "xxxx  1", "y     22"]
 
 

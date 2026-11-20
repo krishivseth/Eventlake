@@ -178,5 +178,19 @@ def test_send_alert_does_nothing_when_all_ok() -> None:
     assert post.calls == []
 
 
+def test_send_alert_returns_false_on_http_error_status() -> None:
+    class Response:
+        status_code = 500
+
+    class Post(FakePost):
+        def __call__(self, url: str, **kwargs: Any) -> Any:
+            super().__call__(url, **kwargs)
+            return Response()
+
+    post = Post()
+    assert send_alert(statuses(), "https://hook.test/x", http_post=post) is False
+    assert len(post.calls) == 1
+
+
 def test_send_alert_swallows_post_errors() -> None:
     assert send_alert(statuses(), "https://hook.test/x", http_post=FakePost(fail=True)) is False

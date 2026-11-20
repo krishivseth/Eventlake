@@ -22,6 +22,7 @@ from eventlake.health import POLICIES, FeedStatus, check_feed
 from eventlake.panel import PanelRow, eve_panel
 from eventlake.runner import Collector, run_collector
 from eventlake.store import Store
+from eventlake.tables import format_table, render_health
 from eventlake.types import Observation, parse_utc, utc
 
 IMPLIED_HEADER = "implied move (synthetic sample)"
@@ -279,9 +280,7 @@ def demo_health(store: Store, now: datetime, offline: bool) -> list[FeedStatus]:
     return [check_feed(store, POLICIES[f], now) for f in sorted(feeds)]
 
 
-def render_demo(
-    offline: bool, now: datetime, table: Callable[..., str], health: Callable[..., str]
-) -> tuple[str, bool]:
+def render_demo(offline: bool, now: datetime) -> tuple[str, bool]:
     """The demo text and whether every self-check passed."""
     store, events = build_store(offline, now)
     try:
@@ -304,7 +303,7 @@ def render_demo(
         out += ["eventlake demo (live data)", f"Clock {_stamp(now)}."]
     out.append("")
     out.append("1. As known the day before each event")
-    out.append(table(*_panel_cells(eve)))
+    out.append(format_table(*_panel_cells(eve)))
     if offline:
         out.append(
             f"The '{IMPLIED_HEADER}' column is computed by the real solver from illustrative"
@@ -316,11 +315,15 @@ def render_demo(
         priced = sum(1 for r in eve if r.kind == kind and r.market_prob is not None)
         if priced < _MIN_PER_KIND:
             out.append(f"Note: only {priced} {kind} events here have a recorded market price.")
-    out += ["", "2. The same events, as known two days after each", table(*_panel_cells(later))]
+    out += [
+        "",
+        "2. The same events, as known two days after each",
+        format_table(*_panel_cells(later)),
+    ]
     out += [
         "",
         "3. What changed between the two tables (number of events)",
-        table(
+        format_table(
             ["column", "empty to filled", "filled to empty", "value changed"],
             _change_rows(eve, later),
         ),
@@ -338,7 +341,7 @@ def render_demo(
         ),
         "",
         "Feed health" + (" (runs are stamped with the demo clock)" if offline else ""),
-        health(statuses),
+        render_health(statuses),
     ]
     if offline:
         out += [
