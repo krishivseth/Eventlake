@@ -42,12 +42,16 @@ class NoaaCollector:
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
         if "TMAX" not in raw:
             return []  # the station did not report that day
-        station = str(raw["STATION"])
-        tmax = float(raw["TMAX"])
+        station = str(raw.get("STATION", ""))
+        try:
+            tmax = float(raw["TMAX"])
+            day = date.fromisoformat(raw["DATE"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValidationError(f"{station}: malformed TMAX/DATE field ({exc!r})") from exc
         low, high = TMAX_RANGE_F
         if not low <= tmax <= high:
             raise ValidationError(f"{station}: TMAX {tmax} outside [{low}, {high}] F")
-        event = datetime.combine(date.fromisoformat(raw["DATE"]), time(), tzinfo=UTC)
+        event = datetime.combine(day, time(), tzinfo=UTC)
         known = event + timedelta(days=1, hours=12)
         if known > utc(fetched_at):
             return []

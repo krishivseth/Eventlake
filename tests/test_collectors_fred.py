@@ -1,12 +1,14 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 import responses
 
 from eventlake.collectors import REGISTRY
 from eventlake.collectors.fred import FRED_SERIES, FredCollector
 from eventlake.runner import run_collector
 from eventlake.store import Store
+from eventlake.types import ValidationError
 
 FIX = Path(__file__).parent / "fixtures" / "fred"
 URL = "https://fred.stlouisfed.org/graph/fredgraph.csv"
@@ -35,10 +37,10 @@ def test_normalize_fixture_values() -> None:
         for o in c.normalize(r, FETCHED)
         if o.event_time.day in (26, 28) and o.event_time.month == 1
     }
-    assert len(got) == 2
-    (jan28,) = [g for g in got if g[0].day == 28]
-    assert jan28 == (datetime(2026, 1, 28, tzinfo=UTC), datetime(2026, 1, 29, tzinfo=UTC), jan28[2])
-    assert 5000 < jan28[2] < 9000
+    assert got == {
+        (datetime(2026, 1, 26, tzinfo=UTC), datetime(2026, 1, 27, tzinfo=UTC), 6950.23),
+        (datetime(2026, 1, 28, tzinfo=UTC), datetime(2026, 1, 29, tzinfo=UTC), 6978.03),
+    }
 
 
 @responses.activate
@@ -105,3 +107,10 @@ def test_run_collector_end_to_end() -> None:
     sp = snap.series("fred", "SP500")
     assert len(sp) == 19  # 20 rows minus the empty Presidents Day row
     assert all(o.kt_quality == "assumed" for o in sp)
+
+
+def test_non_numeric_value_is_validation_error() -> None:
+    with pytest.raises(ValidationError, match="SP500"):
+        FredCollector().normalize(
+            {"series": "SP500", "date": "2026-01-28", "value": "abc"}, FETCHED
+        )

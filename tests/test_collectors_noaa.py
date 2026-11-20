@@ -101,3 +101,9 @@ def test_run_collector_end_to_end() -> None:
     snap = store.as_of(FETCHED)
     assert snap.latest("noaa", "USW00094728:TMAX") is not None
     assert store.as_of(datetime(2026, 1, 21, tzinfo=UTC)).series("noaa", "USW00094728:TMAX") == []
+
+
+def test_malformed_tmax_is_validation_error() -> None:
+    raw = {"DATE": "2026-01-20", "STATION": "USW00094728", "TMAX": "warm"}
+    with pytest.raises(ValidationError, match="USW00094728"):
+        NoaaCollector().normalize(raw, FETCHED)

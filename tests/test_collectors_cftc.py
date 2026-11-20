@@ -104,3 +104,18 @@ def test_run_collector_end_to_end() -> None:
     assert result.rows_fetched == 3
     assert result.rows_written == 12
     assert len(store.as_of(FETCHED).series("cftc", SERIES)) == 3
+
+
+def test_malformed_field_is_validation_error() -> None:
+    raw = {**_rows()[1], "asset_mgr_positions_long": "n/a"}
+    with pytest.raises(ValidationError, match="asset_mgr_positions_long"):
+        CftcCollector().normalize(raw, FETCHED)
+    missing = {k: v for k, v in _rows()[1].items() if k != "lev_money_positions_short"}
+    with pytest.raises(ValidationError, match="lev_money_positions_short"):
+        CftcCollector().normalize(missing, FETCHED)
+
+
+def test_monday_as_of_maps_to_friday() -> None:
+    raw = {**_rows()[1], "report_date_as_yyyy_mm_dd": "2026-03-09T00:00:00.000"}  # Monday
+    obs = CftcCollector().normalize(raw, FETCHED)
+    assert {o.knowledge_time for o in obs} == {datetime(2026, 3, 13, 19, 30, tzinfo=UTC)}

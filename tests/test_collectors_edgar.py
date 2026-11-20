@@ -10,6 +10,7 @@ from eventlake.collectors import REGISTRY
 from eventlake.collectors.edgar import EDGAR_CIKS, EdgarCollector
 from eventlake.runner import run_collector
 from eventlake.store import Store
+from eventlake.types import ValidationError
 
 FIX = Path(__file__).parent / "fixtures" / "edgar"
 URL = "https://data.sec.gov/submissions/CIK0000320193.json"
@@ -137,3 +138,13 @@ def test_run_collector_end_to_end() -> None:
     assert result.status == "ok", result.error
     assert result.rows_written == 4
     assert len(store.as_of(FETCHED).series("edgar", SERIES)) == 4
+
+
+def test_malformed_acceptance_time_is_validation_error() -> None:
+    recent = {"filingDate": ["2026-11-05"], "form": ["4"], "acceptanceDateTime": ["soon"]}
+    raw = {"cik": "0000320193", "start": START, "end": END, "recent": recent}
+    with pytest.raises(ValidationError, match="0000320193"):
+        EdgarCollector().normalize(raw, FETCHED)
+    del recent["form"]
+    with pytest.raises(ValidationError, match="form"):
+        EdgarCollector().normalize(raw, FETCHED)

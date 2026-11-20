@@ -50,18 +50,31 @@ class EdgarCollector:
             yield {"cik": cik, "start": utc(start), "end": utc(end), "recent": recent}
 
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
+        cik = str(raw["cik"])
         recent = raw["recent"]
         if not isinstance(recent, dict):
-            raise ValidationError(f"{raw['cik']}: submissions have no filings.recent table")
-        dates, forms, accepted = recent["filingDate"], recent["form"], recent["acceptanceDateTime"]
+            raise ValidationError(f"{cik}: submissions have no filings.recent table")
+        try:
+            dates, forms, accepted = (
+                recent["filingDate"],
+                recent["form"],
+                recent["acceptanceDateTime"],
+            )
+        except KeyError as exc:
+            raise ValidationError(f"{cik}: filings.recent lacks column {exc}") from exc
         if not (len(dates) == len(forms) == len(accepted)):
-            raise ValidationError(f"{raw['cik']}: filings.recent columns differ in length")
+            raise ValidationError(f"{cik}: filings.recent columns differ in length")
         first, last = raw["start"].date(), raw["end"].date()
         by_day: dict[date, list[datetime]] = defaultdict(list)
         for filed, form, at in zip(dates, forms, accepted, strict=True):
-            day = date.fromisoformat(filed)
-            if form == FORM and first <= day <= last:
-                by_day[day].append(parse_utc(at))
+            try:
+                day = date.fromisoformat(filed)
+                if form == FORM and first <= day <= last:
+                    by_day[day].append(parse_utc(at))
+            except (TypeError, ValueError) as exc:
+                raise ValidationError(
+                    f"{cik}: malformed filingDate/acceptanceDateTime ({exc!r})"
+                ) from exc
         out: list[Observation] = []
         for day, times in sorted(by_day.items()):
             event = datetime.combine(day, time(), tzinfo=UTC)

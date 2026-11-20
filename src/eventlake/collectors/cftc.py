@@ -25,8 +25,9 @@ CFTC_FIELDS: tuple[str, ...] = (
 
 
 def _publication_time(as_of: datetime) -> datetime:
-    """Friday 15:30 New York of the week after the Tuesday ``as_of`` date (holidays ignored)."""
-    friday = as_of.date() + timedelta(days=3)
+    """First Friday on/after ``as_of`` + 3 days, 15:30 New York (holiday delays not modelled)."""
+    earliest = as_of.date() + timedelta(days=3)
+    friday = earliest + timedelta(days=(4 - earliest.weekday()) % 7)
     return datetime.combine(friday, PUBLISH_TIME, tzinfo=PUBLISH_TZ).astimezone(UTC)
 
 
@@ -53,12 +54,18 @@ class CftcCollector:
         )
 
     def normalize(self, raw: Any, fetched_at: datetime) -> list[Observation]:
-        code = str(raw["cftc_contract_market_code"]).strip()
-        event = parse_utc(raw["report_date_as_yyyy_mm_dd"] + "+00:00")
+        code = str(raw.get("cftc_contract_market_code", "")).strip()
+        try:
+            event = parse_utc(raw["report_date_as_yyyy_mm_dd"] + "+00:00")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValidationError(f"{code}: malformed report date ({exc!r})") from exc
         known = _publication_time(event)
         values: dict[str, float] = {}
         for name in CFTC_FIELDS:
-            value = float(raw[name])
+            try:
+                value = float(raw[name])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValidationError(f"{code}:{name}: missing or non-numeric ({exc!r})") from exc
             if value < 0:
                 raise ValidationError(f"{code}:{name}: negative position {value}")
             values[name] = value
