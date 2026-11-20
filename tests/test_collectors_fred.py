@@ -71,7 +71,7 @@ def test_cpi_known_at_the_release_after_its_reference_month() -> None:
     assert release == datetime(2026, 2, 13, 13, 30, tzinfo=UTC)
     assert (obs.event_time, obs.knowledge_time) == (datetime(2026, 1, 1, tzinfo=UTC), release)
     assert obs.kt_quality == "source"
-    assert obs.attrs == {"event_id": "CPI:2026-02-13"}
+    assert obs.attrs == {"event_id": "CPI:2026-02-13", "value_vintage": "current"}
     assert obs.value == 326.588
     store = Store()
     store.append([obs])
@@ -90,16 +90,16 @@ def test_cpi_cancelled_or_delayed_release_maps_to_the_next_existing_one() -> Non
     (october,) = _cpi("2025-10-01")
     assert september.knowledge_time == _release("CPI:2025-10-24")
     assert october.knowledge_time == _release("CPI:2025-12-18")
-    assert october.attrs == {"event_id": "CPI:2025-12-18"}
+    assert october.attrs["event_id"] == "CPI:2025-12-18"
 
 
 def test_cpi_outside_the_calendar_uses_the_assumed_fallback() -> None:
     (obs,) = _cpi("2024-06-01")
     assert obs.knowledge_time == datetime(2024, 7, 1, tzinfo=UTC) + timedelta(days=45)
     assert obs.kt_quality == "assumed"
-    assert obs.attrs == {}
+    assert "event_id" not in obs.attrs
     (first,) = _cpi("2024-12-01")  # published by the calendar's first release
-    assert first.attrs == {"event_id": "CPI:2025-01-15"}
+    assert first.attrs["event_id"] == "CPI:2025-01-15"
     (beyond,) = _cpi("2026-12-01", datetime(2027, 3, 1, tzinfo=UTC))  # no later release
     assert beyond.knowledge_time == datetime(2027, 1, 1, tzinfo=UTC) + timedelta(days=45)
     assert beyond.kt_quality == "assumed"
@@ -110,7 +110,7 @@ def test_daily_series_keep_the_next_day_rule() -> None:
         {"series": "DFF", "date": "2026-02-02", "value": "3.64"}, FETCHED
     )
     assert dff.knowledge_time == datetime(2026, 2, 4, tzinfo=UTC)
-    assert dff.attrs == {}
+    assert dff.attrs == {"value_vintage": "current"}
 
 
 def test_kt_quality_is_declared() -> None:
@@ -120,6 +120,15 @@ def test_kt_quality_is_declared() -> None:
     assert obs.kt_quality == "assumed"
     assert obs.feed == "fred"
     assert obs.series_id == "DFF"
+
+
+def test_every_observation_is_marked_as_a_current_vintage() -> None:
+    c = FredCollector()
+    for series, day in (("SP500", "2026-01-28"), ("DFF", "2026-02-02"), ("CPIAUCSL", "2026-01-01")):
+        (obs,) = c.normalize({"series": series, "date": day, "value": "1.5"}, FETCHED)
+        assert obs.attrs["value_vintage"] == "current", series
+    (fallback,) = c.normalize({"series": "CPIAUCSL", "date": "2024-06-01", "value": "1.5"}, FETCHED)
+    assert fallback.attrs == {"value_vintage": "current"}
 
 
 def test_fred_missing_value_yields_nothing() -> None:

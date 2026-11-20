@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from eventlake.cli import app
+from eventlake.demo import default_now, render_demo
 
 ROOT = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {".git", ".venv", "data", ".mypy_cache", ".ruff_cache", ".pytest_cache", "__pycache__"}
@@ -80,3 +81,13 @@ def test_readme_quickstart_command_exists() -> None:
     result = CliRunner().invoke(app, ["demo", "--help"])
     assert result.exit_code == 0
     assert "--offline" in result.output
+
+
+def test_readme_demo_output_is_current() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    blocks = re.findall(r"^```\n(.*?)^```$", readme, flags=re.S | re.M)
+    pasted = [b for b in blocks if b.startswith("eventlake offline demo")]
+    assert len(pasted) == 1
+    text, ok = render_demo(True, default_now())
+    assert ok
+    assert pasted[0] == text + "\n"

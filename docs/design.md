@@ -13,9 +13,10 @@ the same `(feed, series_id, event_time)` and the greatest `knowledge_time` not a
 - If the exact key is already stored with a different value (a source that re-publishes a
   number under the same assumed knowledge time), the row is stored under
   `knowledge_time = ingested_at` with `kt_quality = "observed"`: the revision is dated when
-  eventlake first saw it. If `ingested_at` is not later than the key, `ValidationError` is
-  raised and the transaction rolls back; the runner then appends row by row and quarantines
-  only the offending ones.
+  eventlake first saw it. `ValidationError` is raised, and the transaction rolls back, if
+  `ingested_at` is not later than the key, or if the revision's own key (the same series and
+  `event_time` at `ingested_at`) already holds a different value. The runner then appends row
+  by row and quarantines only the offending ones.
 
 No code path issues `UPDATE` or `DELETE` against the store; `tests/test_store.py` checks the
 source for both.

@@ -1,4 +1,9 @@
-"""FRED collector: daily and monthly macro series from the keyless CSV endpoint."""
+"""FRED collector: daily and monthly macro series from the keyless CSV endpoint.
+
+The keyless CSV serves each series' current values, not the values first published, so a
+revised series such as CPIAUCSL is stored as revised; every observation carries
+``attrs["value_vintage"] = "current"`` to say so.
+"""
 
 import csv
 import io
@@ -120,6 +125,6 @@ class FredCollector:
                 knowledge_time=known,
                 value=value,
                 kt_quality=quality,
-                attrs=attrs,
+                attrs={**attrs, "value_vintage": "current"},
             )
         ]
