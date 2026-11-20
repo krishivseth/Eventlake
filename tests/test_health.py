@@ -7,6 +7,7 @@ import pytest
 from eventlake.collectors import REGISTRY
 from eventlake.health import (
     POLICIES,
+    Check,
     FeedPolicy,
     FeedStatus,
     check_all,
@@ -179,6 +180,27 @@ def test_empty_runs_ok_with_fewer_than_three_or_one_non_empty() -> None:
     add_run(store, timedelta(hours=1), fetched=7)
     add_run(store, timedelta(minutes=30), fetched=0)
     assert checks(check_feed(store, POLICY, NOW))["empty_runs"].status == "ok"
+
+
+def _empty_runs_after(policy: FeedPolicy, empty: int) -> Check:
+    store = Store()
+    add_run(store, timedelta(hours=empty + 1), fetched=50, feed=policy.feed)
+    for h in range(empty, 0, -1):
+        add_run(store, timedelta(hours=h), fetched=0, feed=policy.feed)
+    check: Check = checks(check_feed(store, policy, NOW))["empty_runs"]
+    return check
+
+
+def test_empty_runs_limit_is_per_feed() -> None:
+    assert POLICIES["cftc"].max_empty_runs == 10
+    assert _empty_runs_after(POLICIES["cftc"], 5).status == "ok"
+    tenth = _empty_runs_after(POLICIES["cftc"], 10)
+    assert tenth.status == "fail" and "10" in tenth.detail
+    edgar = _empty_runs_after(POLICIES["edgar"], 10)
+    assert edgar.status == "ok" and edgar.detail == "not checked for this feed"
+    assert POLICIES["kalshi"].max_empty_runs == 3
+    assert _empty_runs_after(POLICIES["kalshi"], 3).status == "fail"
+    assert _empty_runs_after(POLICIES["kalshi"], 2).status == "ok"
 
 
 def _gap_note(policy: FeedPolicy) -> str:

@@ -17,7 +17,6 @@ _GAP_WINDOW_DAYS = 30
 _GAP_PUBLISH_LAG_DAYS = 2  # the newest days are the freshness check's business, not a gap
 _PRIOR_RUNS = 10
 _MIN_PRIOR_RUNS = 3
-_EMPTY_RUNS = 3
 
 
 @dataclass(frozen=True)
@@ -30,6 +29,11 @@ class FeedPolicy:
     agree for every feed whose record yields one observation; for one that yields several (CFTC
     yields four) a store rejection weighs more than a fetched record. ``market_days`` marks
     ``daily_series`` that skip exchange holidays, which the gap check cannot tell from gaps.
+
+    ``max_empty_runs`` is how many completed runs in a row may fetch 0 rows before the
+    ``empty_runs`` check fails; ``None`` skips the check. ``cftc`` allows 10: a daily run finds
+    nothing new from one weekly report until the next is served. ``edgar`` skips it: an issuer
+    can go weeks without a Form 4 filing.
     """
 
     feed: str
@@ -38,6 +42,7 @@ class FeedPolicy:
     max_quarantine_ratio: float = 0.05
     daily_series: tuple[str, ...] = ()
     market_days: bool = False
+    max_empty_runs: int | None = 3
 
 
 @dataclass(frozen=True)
@@ -62,8 +67,8 @@ POLICIES: dict[str, FeedPolicy] = {
         FeedPolicy("tradier.options", timedelta(hours=36)),
         FeedPolicy("fred", timedelta(days=4), daily_series=("SP500",), market_days=True),
         FeedPolicy("noaa", timedelta(days=4), daily_series=("USW00094728:TMAX",)),
-        FeedPolicy("cftc", timedelta(days=9)),
-        FeedPolicy("edgar", timedelta(days=4)),
+        FeedPolicy("cftc", timedelta(days=9), max_empty_runs=10),
+        FeedPolicy("edgar", timedelta(days=4), max_empty_runs=None),
     )
 }
 
@@ -124,13 +129,16 @@ def _volume(good: list[_Run], policy: FeedPolicy) -> Check:
     return Check("volume", "ok", detail)
 
 
-def _empty_runs(good: list[_Run]) -> Check:
-    last = good[:_EMPTY_RUNS]
-    if len(last) < _EMPTY_RUNS:
-        return Check("empty_runs", "ok", f"skipped: fewer than {_EMPTY_RUNS} completed runs")
+def _empty_runs(good: list[_Run], policy: FeedPolicy) -> Check:
+    limit = policy.max_empty_runs
+    if limit is None:
+        return Check("empty_runs", "ok", "not checked for this feed")
+    last = good[:limit]
+    if len(last) < limit:
+        return Check("empty_runs", "ok", f"skipped: fewer than {limit} completed runs")
     if all(r.rows_fetched == 0 for r in last):
-        return Check("empty_runs", "fail", f"the last {_EMPTY_RUNS} completed runs fetched 0 rows")
-    return Check("empty_runs", "ok", f"one of the last {_EMPTY_RUNS} completed runs fetched rows")
+        return Check("empty_runs", "fail", f"the last {limit} completed runs fetched 0 rows")
+    return Check("empty_runs", "ok", f"one of the last {limit} completed runs fetched rows")
 
 
 def _quarantine(runs: list[_Run], policy: FeedPolicy) -> Check:
@@ -175,7 +183,7 @@ def check_feed(store: Store, policy: FeedPolicy, now: datetime) -> FeedStatus:
         _freshness(good, policy, now),
         _last_run(runs),
         _volume(good, policy),
-        _empty_runs(good),
+        _empty_runs(good, policy),
         _quarantine(runs, policy),
         _gaps(store, policy, now) if good else Check("gaps", "ok", "no runs recorded"),
     )

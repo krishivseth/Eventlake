@@ -60,15 +60,18 @@ def _warn_calendar(now: datetime) -> None:
 
 def _store_markets(
     store: Store, collector: Collector, first: datetime, last: datetime
-) -> int | None:
-    """List and store the collector's markets; ``None`` (with a failed run recorded) on error."""
+) -> int | str:
+    """List and store the collector's markets: the number of new ones, or the error text."""
     lister: Any = getattr(collector, "list_markets", None)
     try:
         return upsert_markets(store, lister(first, last))
     except Exception as exc:
-        error = f"market listing failed: {describe(exc)}"
-        typer.echo(_describe_run(record_failure(store, collector.feed, error, at=_now())))
-        return None
+        return f"market listing failed: {describe(exc)}"
+
+
+def _record_listing_failure(store: Store, feed: str, error: str) -> None:
+    """Record a failed listing; called after the feed's run so it is the feed's latest run."""
+    typer.echo(_describe_run(record_failure(store, feed, error, at=_now())))
 
 
 def _link(store: Store, now: datetime) -> str:
@@ -105,21 +108,22 @@ def ingest(
         typer.echo(f"cannot start {feed}: {exc}", err=True)
         raise typer.Exit(1) from None
     lists = hasattr(collector, "list_markets")
-    listing_failed = False
+    listing: int | str = 0
     store = _open_store()
     try:
         if lists:
             upsert_events(store, load_events())
-            new_markets = _store_markets(store, collector, first, last)
-            listing_failed = new_markets is None
-        result = run_collector(collector, store, first, last)
+            listing = _store_markets(store, collector, first, last)
+        result = run_collector(collector, store, first, last, now=_now)
         typer.echo(_describe_run(result))
+        if isinstance(listing, str):
+            _record_listing_failure(store, feed, listing)
         if lists:
             links = _link(store, now)
-            typer.echo(links if listing_failed else f"markets: {new_markets} new, {links}")
+            typer.echo(links if isinstance(listing, str) else f"markets: {listing} new, {links}")
     finally:
         store.close()
-    if result.status == "failed" or listing_failed:
+    if result.status == "failed" or isinstance(listing, str):
         raise typer.Exit(1)
 
 
@@ -143,18 +147,21 @@ def backfill(
                 collectors[feed] = REGISTRY[feed]()
             except Exception as exc:
                 typer.echo(f"skip {feed}: {exc}")
+        listing_errors: dict[str, str] = {}
         for feed, collector in collectors.items():
             if not hasattr(collector, "list_markets"):
                 continue
-            new_markets = _store_markets(store, collector, first, now)
-            if new_markets is None:
-                failed = True
+            listing = _store_markets(store, collector, first, now)
+            if isinstance(listing, str):
+                listing_errors[feed] = listing
             else:
-                typer.echo(f"markets {feed}: {new_markets} new")
-        for collector in collectors.values():
-            result = run_collector(collector, store, first, now)
+                typer.echo(f"markets {feed}: {listing} new")
+        for feed, collector in collectors.items():
+            result = run_collector(collector, store, first, now, now=_now)
             typer.echo(_describe_run(result))
-            failed = failed or result.status == "failed"
+            if feed in listing_errors:
+                _record_listing_failure(store, feed, listing_errors[feed])
+            failed = failed or result.status == "failed" or feed in listing_errors
         typer.echo(_link(store, now))
     finally:
         store.close()

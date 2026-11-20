@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 
 from eventlake import cli
 from eventlake.entities import Market
-from eventlake.health import POLICIES
+from eventlake.health import POLICIES, FeedPolicy, check_feed
 from eventlake.runner import RunResult
 from eventlake.store import Store
 from eventlake.tables import format_table
@@ -136,6 +136,31 @@ def test_backfill_listing_failure_is_recorded_and_exits_one(
     assert result.exit_code == 1
     assert "market listing failed: RuntimeError: listing endpoint down" in result.output
     assert sorted(runs(db)) == [("listing", "failed", 0), ("listing", "ok", 1)]
+
+
+def _ticking_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    ticks = iter(range(1000))
+    monkeypatch.setattr(cli, "_now", lambda: NOW + timedelta(seconds=next(ticks)))
+
+
+@pytest.mark.parametrize("command", [["ingest", "listing"], ["backfill"]])
+def test_failed_listing_is_the_latest_run_in_health(
+    db: Path, monkeypatch: pytest.MonkeyPatch, command: list[str]
+) -> None:
+    _ticking_clock(monkeypatch)
+    monkeypatch.setattr(cli, "REGISTRY", {"listing": lambda: Listing(fail_listing=True)})
+    result = runner.invoke(cli.app, [*command, "--start", "2026-03-01"])
+    assert result.exit_code == 1
+    assert "listing: ok" in result.output
+    store = Store(db)
+    try:
+        policy = FeedPolicy("listing", timedelta(hours=36))
+        status = check_feed(store, policy, NOW + timedelta(minutes=5))
+    finally:
+        store.close()
+    last_run = {c.name: c for c in status.checks}["last_run"]
+    assert last_run.status == "fail"
+    assert "market listing failed: RuntimeError: listing endpoint down" in last_run.detail
 
 
 def test_backfill_prints_unlinked_count(db: Path, monkeypatch: pytest.MonkeyPatch) -> None:
