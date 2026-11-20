@@ -109,10 +109,10 @@ returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or dele
 - No read returns a row whose `knowledge_time` is after the as-of time:
   `tests/test_store.py` (`test_no_leak_property`, randomised) and `tests/test_panel.py`
   (`test_panel_no_leak`, which appends later revisions and checks the panel is unchanged).
-- Re-ingesting does not duplicate versions: a row is stored only if its value differs from the
-  latest value stored for its source key, or, for a key not seen before, from the version
-  visible at its knowledge time (`tests/test_store.py::test_reingest_is_idempotent`,
-  `tests/test_runner.py::test_rerun_same_window_writes_zero`).
+- Re-ingesting an unchanged source writes nothing when it serves one knowledge time per data
+  point, as all seven feeds do (`docs/design.md` covers the multi-vintage edge cases): a row is
+  stored only if its value differs from the latest for its source key, or, for a new key, from
+  the version visible then (`test_reingest_is_idempotent`, `test_rerun_same_window_writes_zero`).
 
 ## Feeds
 
@@ -131,7 +131,7 @@ returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or dele
 | Decision | Alternative considered | Why |
 |---|---|---|
 | Append-only versions keyed by (feed, series, event_time, knowledge_time) | Upsert the latest value | An upsert erases what was known earlier, which is what a point-in-time store exists to keep. A test fails if the source contains `UPDATE` or `DELETE FROM`. |
-| Store a row only when the value changes | Store every fetch | Scheduled re-runs cost nothing and every stored version is a real change. |
+| Store a row only when the value changes | Store every fetch | Scheduled re-runs of an unchanged source write nothing, so stored versions track real changes. |
 | Derived values computed from a `Snapshot` on read | Materialised derived tables | A stored derived value needs its own knowledge time and recomputation on every revision; computing from a snapshot inherits the as-of guarantee. |
 | One `Collector` protocol and one runner that quarantines | Per-feed ingest scripts | Validation, quarantine, run records and health live in one place; a bad record never drops the batch. |
 | Declared `kt_quality` per row | Treat every knowledge time as exact | Keyless sources do not say when a value was published; the flag makes the assumption visible and filterable. |
