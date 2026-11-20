@@ -15,11 +15,10 @@ move known before each event beside the move that followed.
 uv sync && uv run eventlake demo --offline
 ```
 
-The offline demo needs no keys and no network. It replays public data recorded on 2026-11-20
-through the real collectors' `normalize`, the real runner and the store. The market
-probabilities and realised moves are recorded public data. The `implied move (synthetic
-sample)` column is the real solver run on an illustrative IV sample, because recorded option
-history is not included (see `src/eventlake/demo_data/synthetic/README.md`). Real output:
+The offline demo needs no keys or network: it replays public data recorded on 2026-11-20 through the
+real collectors' `normalize`, runner and store. Only the `implied move (synthetic sample)` column is
+not recorded data: it is the real solver run on an illustrative IV sample
+(`src/eventlake/demo_data/synthetic/README.md`), as option history is not included. Real output:
 
 ```
 eventlake offline demo
@@ -141,20 +140,21 @@ returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or dele
 ## Limitations
 
 - FRED daily series, NOAA and CFTC knowledge times are assumed from a fixed rule.
-- The keyless FRED CSV serves today's values, not first-release values. CPIAUCSL is seasonally
-  adjusted and revised, so a backfill stamps the currently revised number with the original
-  release time: the timestamp is right, but the value can differ from what was published that
-  day. Rows carry `attrs.value_vintage = "current"`. FRED's vintage API (ALFRED) would fix
-  this for CPI and remove the lag assumption for the daily series.
+- The keyless FRED CSV serves today's values, not first releases: a backfill stamps the revised
+  CPIAUCSL number with its original release time, so the time is right but the value can differ
+  from what was published that day (rows carry `attrs.value_vintage = "current"`). ALFRED,
+  FRED's vintage API, would fix this and remove the lag assumption for the daily series.
 - CPIAUCSL is matched to the calendar on the assumption of one CPI release per reference
   month. The one exception in the calendar is October 2025, whose release was cancelled; it
   would be dated at the next release (2025-12-18), but FRED has no value for that month.
-- The CFTC rule (Friday 15:30 New York) does not model releases delayed by holidays.
 - Events and market-to-event links are reference data read as currently stored. A market
   linked later can change which already-priced market a past panel row shows (only to one
   priced at that as-of time; `test_late_link_can_only_surface_prices_already_known`).
-- The health gap check counts weekdays and has no holiday calendar.
-- The event calendar is a hand-maintained set of CSVs covering 2025-2026.
+- Neither the CFTC rule (Friday 15:30 New York) nor the health gap check knows holidays.
+- The event calendar, from the Fed and BLS schedules, ends at the last published 2027 dates
+  (FOMC 2027-11-17, NFP 2027-12-03, CPI 2027-12-10). Past them, FOMC and CPI markets stay
+  unlinked, the panel gets no new rows and CPIAUCSL falls back to the assumed month-end + 45
+  days rule; `health`, `ingest` and `backfill` warn from 30 days before the end.
 - DuckDB allows one writer per file. `serve` holds the database open, so stop it before
   running `ingest` or `backfill` against the same file.
 - The Tradier collector is built from the documented API; its test fixtures are hand-built

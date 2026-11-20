@@ -227,6 +227,33 @@ def test_cli_health_alert_uses_webhook(db: Path, monkeypatch: pytest.MonkeyPatch
     assert sent == [("https://hook.test/x", ["cftc"])]
 
 
+LATE = datetime(2027, 11, 20, tzinfo=UTC)
+CALENDAR_WARNINGS = (
+    "calendar: CPI schedule ends 2027-12-10",
+    "calendar: FOMC schedule ends 2027-11-17",
+    "calendar: NFP schedule ends 2027-12-03",
+)
+
+
+def test_health_warns_near_the_calendar_end(db: Path) -> None:
+    seed_runs(db)
+    assert "calendar:" not in runner.invoke(cli.app, ["health"]).output
+    out = runner.invoke(cli.app, ["health", "--now", LATE.isoformat()]).output
+    assert all(w in out for w in CALENDAR_WARNINGS)
+
+
+def test_ingest_and_backfill_warn_near_the_calendar_end(
+    db: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cli, "_now", lambda: LATE)
+    monkeypatch.setitem(cli.REGISTRY, "fake", Fake)
+    out = runner.invoke(cli.app, ["ingest", "fake"]).output
+    assert all(w in out for w in CALENDAR_WARNINGS)
+    monkeypatch.setattr(cli, "REGISTRY", {"fake": Fake})
+    out = runner.invoke(cli.app, ["backfill", "--start", "2027-11-01"]).output
+    assert all(w in out for w in CALENDAR_WARNINGS)
+
+
 def test_export_writes_parquet(db: Path, tmp_path: Path) -> None:
     store = Store(db)
     from eventlake.calendar import load_events, upsert_events

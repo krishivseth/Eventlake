@@ -25,6 +25,7 @@ _RELEASE_TIME: dict[str, time] = {
     "NFP": time(8, 30),
 }
 _CSV_FILES = {"FOMC": "fomc.csv", "CPI": "cpi.csv", "NFP": "nfp.csv"}
+_WARN_BEFORE_END = timedelta(days=30)
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,24 @@ def load_events(kinds: Sequence[EventKind] | None = None) -> list[Event]:
             raise ValueError(f"unknown event kind: {kind}")
         events.extend(_load_kind(kind))
     return sorted(events, key=lambda e: (e.scheduled_time, e.event_id))
+
+
+def calendar_coverage_end(kind: EventKind) -> date:
+    """The last scheduled date of ``kind`` in the packaged calendar."""
+    if kind not in _CSV_FILES:
+        raise ValueError(f"no packaged schedule for event kind: {kind}")
+    return max(e.scheduled_time.astimezone(_NY).date() for e in _load_kind(kind))
+
+
+def calendar_warnings(now: datetime) -> list[str]:
+    """One line per kind whose schedule ends within 30 days of ``now``, or already has."""
+    today = utc(now).date()
+    out: list[str] = []
+    for kind in sorted(_CSV_FILES):
+        end = calendar_coverage_end(kind)  # type: ignore[arg-type]
+        if today >= end - _WARN_BEFORE_END:
+            out.append(f"calendar: {kind} schedule ends {end.isoformat()}")
+    return out
 
 
 def weather_event(station: str, day: date) -> Event:

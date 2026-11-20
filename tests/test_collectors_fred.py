@@ -100,8 +100,10 @@ def test_cpi_outside_the_calendar_uses_the_assumed_fallback() -> None:
     assert "event_id" not in obs.attrs
     (first,) = _cpi("2024-12-01")  # published by the calendar's first release
     assert first.attrs["event_id"] == "CPI:2025-01-15"
-    (beyond,) = _cpi("2026-12-01", datetime(2027, 3, 1, tzinfo=UTC))  # no later release
-    assert beyond.knowledge_time == datetime(2027, 1, 1, tzinfo=UTC) + timedelta(days=45)
+    (last,) = _cpi("2027-11-01", datetime(2028, 3, 1, tzinfo=UTC))
+    assert last.attrs["event_id"] == "CPI:2027-12-10"  # the calendar's last release
+    (beyond,) = _cpi("2027-12-01", datetime(2028, 3, 1, tzinfo=UTC))  # no later release
+    assert beyond.knowledge_time == datetime(2028, 1, 1, tzinfo=UTC) + timedelta(days=45)
     assert beyond.kt_quality == "assumed"
 
 

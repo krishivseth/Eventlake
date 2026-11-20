@@ -7,7 +7,7 @@ from typing import Annotated, Any
 
 import typer
 
-from eventlake.calendar import load_events, upsert_events
+from eventlake.calendar import calendar_warnings, load_events, upsert_events
 from eventlake.collectors import REGISTRY
 from eventlake.entities import link_markets, unlinked_markets, upsert_markets
 from eventlake.health import check_all, send_alert, unconfigured_feeds
@@ -54,6 +54,11 @@ def _describe_run(result: RunResult) -> str:
     return f"{text}\n  error: {result.error}" if result.error else text
 
 
+def _warn_calendar(now: datetime) -> None:
+    for line in calendar_warnings(now):
+        typer.echo(line)
+
+
 def _store_markets(
     store: Store, collector: Collector, first: datetime, last: datetime
 ) -> int | None:
@@ -94,6 +99,7 @@ def ingest(
     now = _now()
     first = parse_when(start) if start else now - timedelta(days=7)
     last = parse_when(end) if end else now
+    _warn_calendar(now)
     try:
         collector = REGISTRY[feed]()
     except Exception as exc:
@@ -127,6 +133,7 @@ def backfill(
     Exits 1 if any run or market listing failed.
     """
     first, now = parse_when(start), _now()
+    _warn_calendar(now)
     store = _open_store()
     failed = False
     try:
@@ -164,15 +171,17 @@ def health(
     now: Annotated[str | None, typer.Option(hidden=True)] = None,
 ) -> None:
     """Print feed health; exit 1 if any feed that has run fails."""
+    when = parse_when(now) if now else _now()
     store = _open_store()
     try:
-        statuses = check_all(store, parse_when(now) if now else _now())
+        statuses = check_all(store, when)
         never_run = unconfigured_feeds(store)
     finally:
         store.close()
     typer.echo(render_health(statuses))
     if never_run:
         typer.echo(f"Not configured (never run): {', '.join(never_run)}")
+    _warn_calendar(when)
     failing = any(s.status == "fail" for s in statuses)
     if alert and failing:
         url = os.environ.get("EVENTLAKE_ALERT_WEBHOOK")

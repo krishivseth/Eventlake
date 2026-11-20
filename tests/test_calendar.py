@@ -1,6 +1,16 @@
+import csv
 from datetime import UTC, date, datetime
+from importlib import resources
 
-from eventlake.calendar import load_events, upsert_events, weather_event
+import pytest
+
+from eventlake.calendar import (
+    calendar_coverage_end,
+    calendar_warnings,
+    load_events,
+    upsert_events,
+    weather_event,
+)
 from eventlake.entities import Market, upsert_markets
 from eventlake.store import Store
 
@@ -32,8 +42,47 @@ def test_shutdown_affected_releases_use_actual_dates() -> None:
 
 def test_eight_fomc_meetings_per_year() -> None:
     events = load_events(["FOMC"])
-    for year in (2025, 2026):
+    for year in (2025, 2026, 2027):
         assert sum(1 for e in events if e.scheduled_time.year == year) == 8
+
+
+def test_2027_schedules_from_the_official_pages() -> None:
+    fomc, cpi, nfp = _by_id("FOMC"), _by_id("CPI"), _by_id("NFP")
+    assert fomc["FOMC:2027-01-27"].scheduled_time == datetime(2027, 1, 27, 19, 0, tzinfo=UTC)
+    assert fomc["FOMC:2027-11-17"].attrs["source_url"].startswith("https://www.federalreserve")
+    assert cpi["CPI:2027-07-14"].scheduled_time == datetime(2027, 7, 14, 12, 30, tzinfo=UTC)
+    assert nfp["NFP:2027-12-03"].scheduled_time == datetime(2027, 12, 3, 13, 30, tzinfo=UTC)
+    for kind in (cpi, nfp):
+        assert sum(1 for e in kind.values() if e.scheduled_time.year == 2027) == 12
+
+
+def test_coverage_end_per_kind() -> None:
+    assert calendar_coverage_end("FOMC") == date(2027, 11, 17)
+    assert calendar_coverage_end("CPI") == date(2027, 12, 10)
+    assert calendar_coverage_end("NFP") == date(2027, 12, 3)
+    with pytest.raises(ValueError):
+        calendar_coverage_end("WEATHER_HIGH")
+
+
+def test_warnings_within_thirty_days_of_or_past_the_end() -> None:
+    assert calendar_warnings(datetime(2027, 10, 17, tzinfo=UTC)) == []
+    assert calendar_warnings(datetime(2027, 10, 18, tzinfo=UTC)) == [
+        "calendar: FOMC schedule ends 2027-11-17"
+    ]
+    assert calendar_warnings(datetime(2028, 3, 1, tzinfo=UTC)) == [
+        "calendar: CPI schedule ends 2027-12-10",
+        "calendar: FOMC schedule ends 2027-11-17",
+        "calendar: NFP schedule ends 2027-12-03",
+    ]
+
+
+@pytest.mark.parametrize("name", ["fomc.csv", "cpi.csv", "nfp.csv"])
+def test_calendar_csv_dates_are_sorted_unique_weekdays(name: str) -> None:
+    text = resources.files("eventlake").joinpath("calendar_data", name).read_text("utf-8")
+    days = [date.fromisoformat(r["date"]) for r in csv.DictReader(text.splitlines())]
+    assert days and all(d.weekday() < 5 for d in days)
+    assert len(days) == len(set(days))
+    assert days == sorted(days)
 
 
 def test_events_sorted_and_ids_unique() -> None:
