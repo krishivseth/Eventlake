@@ -160,10 +160,10 @@ returns 6850.10; `as_of(2026-03-21)` returns 6851.40. Nothing is updated or dele
   lists in separate files, are not fetched. CFTC fetches one page of at most 5,000 rows a run.
 - DuckDB allows one writer per file. `serve` holds the database open, so stop it before
   running `ingest` or `backfill` against the same file.
-- The Tradier collector was run once against the live API (2026-11-21, default settings: 6
-  expiries fetched, 6 stored, none quarantined; see `docs/live-run.md`); its test fixtures are still hand-built from
-  documented response shapes. Option history is not included, so a live store accrues
-  implied moves only from the day option snapshots start.
+- Every feed except EDGAR was run once against the live APIs on 2026-11-21; the output is in
+  `docs/live-run.md`. The Tradier test fixtures are still hand-built from documented
+  response shapes. Option history is not included, so a live store accrues implied moves
+  only from the day option snapshots start.
 - The live (non-offline) demo path is not covered by automated tests.
 
 ## Running live

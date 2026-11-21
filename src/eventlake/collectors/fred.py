@@ -13,6 +13,8 @@ from datetime import UTC, date, datetime, time, timedelta
 from functools import cache
 from typing import Any
 
+import requests
+
 from eventlake.calendar import Event, EventKind, load_events
 from eventlake.http import HttpClient, RateLimiter
 from eventlake.types import (
@@ -99,7 +101,17 @@ class FredCollector:
         http: HttpClient | None = None,
     ) -> None:
         self._series = dict(series)
-        self._http = http if http is not None else HttpClient(BASE_URL, limiter=RateLimiter(2, 1.0))
+        # FRED's edge leaves a request with the bare "eventlake/0.1" User-Agent unanswered until
+        # it times out (seen live on 2026-11-21), but answers the requests library's default.
+        self._http = (
+            http
+            if http is not None
+            else HttpClient(
+                BASE_URL,
+                headers={"User-Agent": requests.utils.default_user_agent()},
+                limiter=RateLimiter(2, 1.0),
+            )
+        )
 
     def fetch(self, start: datetime, end: datetime) -> Iterator[Any]:
         """One record per CSV row dated inside ``[start, end]``; the endpoint returns it all.

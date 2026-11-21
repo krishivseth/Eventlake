@@ -189,3 +189,14 @@ def test_malformed_row_met_during_fetch_is_quarantined_and_the_run_continues() -
     assert "fred: SP500: malformed observation_date" in reason
     days = [o.event_time.day for o in store.as_of(FETCHED).series("fred", "SP500")]
     assert 28 in days and 27 not in days
+
+
+@responses.activate
+def test_default_client_does_not_send_the_bare_eventlake_user_agent() -> None:
+    """FRED leaves the bare "eventlake/0.1" User-Agent unanswered; see the collector."""
+    responses.get(
+        "https://fred.stlouisfed.org/graph/fredgraph.csv", body="observation_date,SP500\n"
+    )
+    list(FredCollector().fetch(datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 1, 2, tzinfo=UTC)))
+    sent = {call.request.headers["User-Agent"] for call in responses.calls}
+    assert sent and all(agent.startswith("python-requests/") for agent in sent)
