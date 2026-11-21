@@ -80,7 +80,8 @@ def test_readme_quickstart_command_exists() -> None:
     assert QUICKSTART in readme
     result = CliRunner().invoke(app, ["demo", "--help"])
     assert result.exit_code == 0
-    assert "--offline" in result.output
+    # On a CI runner the help text is coloured, which puts escape codes inside the option name.
+    assert "--offline" in re.sub(r"\x1b\[[0-9;]*m", "", result.output)
 
 
 def test_readme_demo_output_is_current() -> None:
